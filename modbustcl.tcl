@@ -117,7 +117,7 @@ proc dropSocket {sock} {
 ###########################################################################
 proc tcpEventRead {sock} {
     global socketdata
-    puts "sock is $sock"
+    # puts "sock is $sock"
 
     set myerror [fconfigure $sock -error]
     if {$myerror != ""} {
@@ -144,7 +144,7 @@ proc tcpEventRead {sock} {
         binary scan $socketdata($sock,head) H* var
         set socketdata($sock,txt) $var
         set socketdata($sock,body) {}
-        puts "Read :$var"
+        # puts "Read :$var"
     }
 
     # check if short packet as will need to go round the loop again
@@ -161,7 +161,7 @@ proc tcpEventRead {sock} {
     set remlen [expr ($pktlen + 6) - $curlen/2]
     #sanity check, no currently handled packet can be less than the header
     if {$remlen <= 0} {
-        puts "curlen :$curlen, pktlen:$pktlen"
+        # puts "curlen :$curlen, pktlen:$pktlen"
         dropSocket $sock
         return
     }
@@ -175,9 +175,9 @@ proc tcpEventRead {sock} {
     set socketdata($sock,body) $socketdata($sock,body)$data
     binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
 
-    puts "expected: [expr ($pktlen*2) + 12], got: [string length $var], block :$var"
+    # puts "expected: [expr ($pktlen*2) + 12], got: [string length $var], block :$var"
     if { [string length $var] == [expr ($pktlen*2) + 12]} {
-        puts "Processing"
+        # puts "Processing $sock"
         set body $socketdata($sock,body)
         clearSocketData $sock
         if { [llength [set valuelist [holding $func $body]]] == 0 } {
