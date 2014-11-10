@@ -84,7 +84,7 @@ proc holding {func data} {
 proc dropSocket {sock} {
     global socketdata
     close $sock
-    unset socketdata($sock,*)
+    array unset socketdata "$sock,*"
     unset socketdata($sock)
 }
 
@@ -98,7 +98,8 @@ proc dropSocket {sock} {
 # any number of bytes so state needs to be managed.
 #
 # The intent is to use the native TCL event loop and no other libraries
-# to achieve this task
+# to achieve this task.
+###########################################################################
 proc tcpEventRead {$sock} {
     global socketdata
 
@@ -133,10 +134,9 @@ proc tcpEventRead {$sock} {
     set socketdata($sock,body) $socketdata($sock,body)[read $channel $remlen]
     binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
 
-
     if { [string length $var] == [expr $pktlen + 14]} {
         set body $socketdata($sock,body)
-        unset socketdata($sock,*)
+        array unset socketdata "$sock,*"
         if { [llength [set valuelist [holding $func $body]]] == 0 } {
             if { [llength [set valuelist [input $func $body]]] == 0 } {
             #    if { [coil  $func $body] != true} {
@@ -160,6 +160,10 @@ proc tcpEventRead {$sock} {
 
 
 #########################################################################
+# This is effective for reads when packets arrive complete.
+# It has issues when partial packets are received.
+#########################################################################
+
 proc readNetTCP {channel} {
     # Read the MBAP header including UID
     set head {}
@@ -263,7 +267,8 @@ proc connect {channel clientaddr clientport} {
     puts "Connecting from $clientaddr $clientport"
     fconfigure $channel -translation binary
     fconfigure $channel -blocking 0
-    fileevent $channel readable [list readNetTCP $channel]
+    # fileevent $channel readable [list readNetTCP $channel]
+    fileevent $channel readable [list tcpEventRead $channel]
     set socketdata($channel) $channel
     set socketdata($channel,rcv) {}
     set socketdata($channel,txt) ""
