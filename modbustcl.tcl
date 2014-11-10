@@ -69,16 +69,103 @@ proc holding {func data} {
         }
         return [list 5 [binary format cSS $func $start $len]]
     } elseif {$func == 22} {
+        puts "Mask Write register"
         binary scan $data SSS addr andmask ormask
-        set $holdingreg($addr) [expr ($holdingreg($addr) & andmask) | (ormask & ~andmask)]
+        binary scan $holdingreg($addr) H* var
+        set $holdingreg($addr) [expr ($holdingreg($addr) & $andmask) | ($ormask & ~$andmask)]
+        binary scan $holdingreg($addr) H* var2
+        puts "$var:$var2"
+
         return [list 7 [binary format cSSS $func $addr $andmask $ormask]]
     }
     return {}
 }
 
+proc dropSocket {sock} {
+    global socketdata
+    close $sock
+    unset socketdata($sock,*)
+    unset socketdata($sock)
+}
+
+
+
+
+##########################################################################
+# socketdata
+# socketdata managers the receive counters for a socket
+# as the interface is in nonblock mode it can receive
+# any number of bytes so state needs to be managed.
+#
+# The intent is to use the native TCL event loop and no other libraries
+# to achieve this task
+proc tcpEventRead {$sock} {
+    global socketdata
+
+    catch{after cancel $socketdata($sock,timer)}
+    set socketdata($sock,timer) [after 5000 [list dropSocket $sock]]
+
+    # Get the first 8 bytes
+    if {[string length $socketdata($sock,txt)] < 16} {
+        set len [expr 8 - ([string length $socketdata($sock,txt)] / 2)]
+        set head [read $channel $len]
+
+        # Append data to struct
+        set socketdata($sock,head) $socketdata($sock,head)$head
+        binary scan $socketdata($sock,head) H* var
+        set socketdata($sock,txt) $var
+        set socketdata($sock,body) {}
+    }
+
+    # check if short packet as will need to go round the loop again
+    set curlen [string length $socketdata($sock,txt)]
+    if {$curlen < 16} {
+        return
+    }
+
+    # By now have enough info to start defining remainder of the packet
+    binary scan $socketdata($sock,head) S2Scc mbap pktlen uid func
+
+    # calcalate the remaining length
+    set remlen [expr ($pktlen + 14) - $curlen]
+
+    # append red to data
+    set socketdata($sock,body) $socketdata($sock,body)[read $channel $remlen]
+    binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
+
+
+    if { [string length $var] == [expr $pktlen + 14]} {
+        set body $socketdata($sock,body)
+        unset socketdata($sock,*)
+        if { [llength [set valuelist [holding $func $body]]] == 0 } {
+            if { [llength [set valuelist [input $func $body]]] == 0 } {
+            #    if { [coil  $func $body] != true} {
+            #        discrete  $func $body
+            #    }
+            }
+        }
+    }
+
+    if { [llength $valuelist] > 0 } {
+        set len [expr [lindex $valuelist 0] + 1]
+        set data [binary format S2Sc $mbap $len $uid]
+        puts -nonewline $sock $data[lindex $valuelist 1]
+        flush $sock
+
+        binary scan $data[lindex $valuelist 1] H* var
+        puts "Sent :$var"
+    }
+}
+
+
+
+#########################################################################
 proc readNetTCP {channel} {
     # Read the MBAP header including UID
+    set head {}
     set head [read $channel 8]
+    binary scan $head H* var
+
     if { $head == "" } {
         # puts "Empty head"
         close $channel
@@ -86,7 +173,9 @@ proc readNetTCP {channel} {
     }
     binary scan $head S2Scc mbap pktlen uid func
     set body [read $channel [expr $pktlen - 2]]
-    # puts "mbap:$mbap, PKTLEN:$pktlen UID:$uid func:$func"
+    puts "mbap:$mbap, PKTLEN:$pktlen UID:$uid func:$func"
+    binary scan $body H* bvar
+    puts "Read :$var$bvar"
 
     if { [llength [set valuelist [holding $func $body]]] == 0 } {
         if { [llength [set valuelist [input $func $body]]] == 0 } {
@@ -102,36 +191,82 @@ proc readNetTCP {channel} {
         puts -nonewline $channel $data[lindex $valuelist 1]
         flush $channel
 
-        #binary scan $data[lindex $valuelist 1] H* var
-        #puts "Sent :$var"
+        binary scan $data[lindex $valuelist 1] H* var
+        puts "Sent :$var"
     }
 }
 
 # Only need this for connection to serial to ethernet adapters
-proc readNetRTU {channel} {
+# RTU from a serial line presents a problem in that no initial
+# length gets received as such some magic needs to be done up front
+# to enable the reuse of the same procedures that are used by the TCP
+# code
+set rtulen(0) {binary ccSSS* $data}
+set rtulen(1) 4
+set rtulen(2) 4
+set rtulen(3) 4
+set rtulen(4) 4
+set rtulen(5) 4
+set rtulen(6) 4
+set rtulen(7) 0
+set rtulen(11) 0
+set rtulen(12) 0
+# after this things get complicated so the format needs to change
+# messages from HEX 10 and up supply a variable length data field.
+#
+# When reading from a serial line we have no packet structure to do
+# all the annoying packet stuff so here the length of the data field
+# needs to be extracted from the serial input.
+#
+# The array now needs to include a sub header length with a marker
+# to indicate which word is the length
+
+set rtulen(16) [list 5 5]
+set rtulen(3) 4
+set rtulen(3) 4
+set rtulen(3) 4
+proc readRTU {channel} {
     global holdingreg
 
-    set data [read -nonewline $channel]
-    binary scan $data ccSSS addr func start len crc
+    set head [read $channel 2]
+    binary scan $data cc addr func
+    if {[info exists rtulen($func)]} {
+        set body [read $channel 2]
+    } else {
+        return
+    }
+
     # puts "addr:$addr, func:$func $start $len"
     set end [expr $start + $len]
-    for {set i $start} {$i < $end} {incr i} {
-        if {[info exists holdingreg($i)]} {
-            set buffer $buffer$holdingreg($i)
-        } else {
-            set buffer $buffer\x0000
+    if { [llength [set valuelist [holding $func $body]]] == 0 } {
+        if { [llength [set valuelist [input $func $body]]] == 0 } {
+        #    if { [coil  $func $body] != true} {
+        #        discrete  $func $body
+        #    }
         }
     }
-    write $channel [binary format cccS* $addr $func $buffer]
+    if { [llength $valuelist] > 0 } {
+        set len [expr [lindex $valuelist 0] + 1]
+        set data [binary format cc $addr $func]
+        puts -nonewline $channel $data[lindex $valuelist 1]
+        flush $channel
+
+        #binary scan $data[lindex $valuelist 1] H* var
+        #puts "Sent :$var"
+    }
     flush $channel
 }
 
 # basic server socket connect thing
 proc connect {channel clientaddr clientport} {
+    global socketdata
     puts "Connecting from $clientaddr $clientport"
     fconfigure $channel -translation binary
     fconfigure $channel -blocking 0
     fileevent $channel readable [list readNetTCP $channel]
+    set socketdata($channel) $channel
+    set socketdata($channel,rcv) {}
+    set socketdata($channel,txt) ""
 }
 
 proc showHelp {} {
