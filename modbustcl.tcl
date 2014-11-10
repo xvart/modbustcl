@@ -69,27 +69,40 @@ proc holding {func data} {
         }
         return [list 5 [binary format cSS $func $start $len]]
     } elseif {$func == 22} {
-        puts "Mask Write register"
+        # puts "Mask Write register"
         binary scan $data SSS addr andmask ormask
         binary scan $holdingreg($addr) H* var
         set $holdingreg($addr) [expr ($holdingreg($addr) & $andmask) | ($ormask & ~$andmask)]
         binary scan $holdingreg($addr) H* var2
-        puts "$var:$var2"
-
         return [list 7 [binary format cSSS $func $addr $andmask $ormask]]
     }
     return {}
 }
 
-proc dropSocket {sock} {
+
+proc clearSocketData {sock} {
     global socketdata
-    close $sock
-    array unset socketdata "$sock,*"
-    unset socketdata($sock)
+    # cleanout any monitor timer
+    if {[info exists socketdata($sock,timer)]} {
+        catch {after cancel $socketdata($sock,timer)}
+    }
+
+    foreach v [array names socketdata "$sock,*"] {
+        set socketdata($v) {}
+    }
+    set socketdata($sock,txt) ""
 }
 
-
-
+proc dropSocket {sock} {
+    global socketdata
+    puts "dropping socket $sock"
+    catch {close $sock}
+    clearSocketData $sock
+    catch {
+        array unset socketdata "$sock,*"
+        unset socketdata($sock)
+    }
+}
 
 ##########################################################################
 # socketdata
@@ -99,23 +112,39 @@ proc dropSocket {sock} {
 #
 # The intent is to use the native TCL event loop and no other libraries
 # to achieve this task.
+#
+# Currently a race condition somewhere
 ###########################################################################
-proc tcpEventRead {$sock} {
+proc tcpEventRead {sock} {
     global socketdata
+    puts "sock is $sock"
 
-    catch{after cancel $socketdata($sock,timer)}
+    set myerror [fconfigure $sock -error]
+    if {$myerror != ""} {
+        dropSocket $sock
+        return
+    }
+
+    if {[info exists socketdata($sock,timer)]} {
+        catch {after cancel $socketdata($sock,timer)}
+    }
     set socketdata($sock,timer) [after 5000 [list dropSocket $sock]]
 
     # Get the first 8 bytes
     if {[string length $socketdata($sock,txt)] < 16} {
         set len [expr 8 - ([string length $socketdata($sock,txt)] / 2)]
-        set head [read $channel $len]
+        set head [read $sock $len]
+        if {$head == {}}  {
+            dropSocket $sock
+            return
+        }
 
         # Append data to struct
         set socketdata($sock,head) $socketdata($sock,head)$head
         binary scan $socketdata($sock,head) H* var
         set socketdata($sock,txt) $var
         set socketdata($sock,body) {}
+        puts "Read :$var"
     }
 
     # check if short packet as will need to go round the loop again
@@ -126,17 +155,31 @@ proc tcpEventRead {$sock} {
 
     # By now have enough info to start defining remainder of the packet
     binary scan $socketdata($sock,head) S2Scc mbap pktlen uid func
+    # puts "curlen :$curlen, pktlen:$pktlen"
 
     # calcalate the remaining length
-    set remlen [expr ($pktlen + 14) - $curlen]
+    set remlen [expr ($pktlen + 6) - $curlen/2]
+    #sanity check, no currently handled packet can be less than the header
+    if {$remlen <= 0} {
+        puts "curlen :$curlen, pktlen:$pktlen"
+        dropSocket $sock
+        return
+    }
 
-    # append red to data
-    set socketdata($sock,body) $socketdata($sock,body)[read $channel $remlen]
+    # append to data
+    set data [read $sock $remlen]
+    if {$data == {}}  {
+        dropSocket $sock
+        exit
+    }
+    set socketdata($sock,body) $socketdata($sock,body)$data
     binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
 
-    if { [string length $var] == [expr $pktlen + 14]} {
+    puts "expected: [expr ($pktlen*2) + 12], got: [string length $var], block :$var"
+    if { [string length $var] == [expr ($pktlen*2) + 12]} {
+        puts "Processing"
         set body $socketdata($sock,body)
-        array unset socketdata "$sock,*"
+        clearSocketData $sock
         if { [llength [set valuelist [holding $func $body]]] == 0 } {
             if { [llength [set valuelist [input $func $body]]] == 0 } {
             #    if { [coil  $func $body] != true} {
@@ -144,16 +187,20 @@ proc tcpEventRead {$sock} {
             #    }
             }
         }
-    }
 
-    if { [llength $valuelist] > 0 } {
-        set len [expr [lindex $valuelist 0] + 1]
-        set data [binary format S2Sc $mbap $len $uid]
-        puts -nonewline $sock $data[lindex $valuelist 1]
-        flush $sock
+        if { [llength $valuelist] > 0 } {
+            set len [expr [lindex $valuelist 0] + 1]
+            set data [binary format S2Sc $mbap $len $uid]
+            puts -nonewline $sock $data[lindex $valuelist 1]
+            flush $sock
 
-        binary scan $data[lindex $valuelist 1] H* var
-        puts "Sent :$var"
+            binary scan $data[lindex $valuelist 1] H* var
+            puts "Sent :$var"
+        }
+    } elseif { [string length $var] > [expr ($pktlen*2) + 12]} {
+        puts "length error"
+        dropSocket $sock
+        exit
     }
 }
 
@@ -261,6 +308,16 @@ proc readRTU {channel} {
     flush $channel
 }
 
+proc tcpCheck {channel} {
+    set myerror [fconfigure $channel -error]
+    puts "tcpCheck $channel $myerror"
+    if { $myerror != ""} {
+        puts $myerror
+        dropSocket $channel
+        exit
+    }
+}
+
 # basic server socket connect thing
 proc connect {channel clientaddr clientport} {
     global socketdata
@@ -269,8 +326,9 @@ proc connect {channel clientaddr clientport} {
     fconfigure $channel -blocking 0
     # fileevent $channel readable [list readNetTCP $channel]
     fileevent $channel readable [list tcpEventRead $channel]
-    set socketdata($channel) $channel
-    set socketdata($channel,rcv) {}
+    # fileevent $channel writable [list tcpCheck $channel]
+    set socketdata($channel,head) {}
+    #set socketdata($channel,rcv) {}
     set socketdata($channel,txt) ""
 }
 
