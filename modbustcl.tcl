@@ -32,35 +32,39 @@ array set functext  [list \
                      43 "Encapsulated Interface Transport" \
                      ]
 
+
+# The func could be hard coded in the body of the call but that is something
+# for later
 array set funcjump [list \
-                    1 {coil_1 $body} \
+                    1 {coil_1 $func $body} \
                     3 {holding3 $func $body} \
                     4 {input $func $body} \
-                    5 {coil_5 $body} \
+                    5 {coil_5 $func $body} \
                     6 {holding6 $func $body} \
-                    15 {coil_15 $body} \
+                    15 {coil_15 $func $body} \
                     16 {holding16 $func $body} \
                     22 {holding22 $func $body} \
                     ]
 
 
-proc coil_1 {data} {
+# coil data
+# coils are 1 per array location???
+proc coil_1 {func data} {
     global coilreg
     binary scan $data SS start len
-    for {set i 0 } {i < [expr $len/8] } {incr i} {
-        lappend buffer 0
+    for {set i 0 } {i < $len } {incr i} {
+        lappend buffer $coilreg([expr $i + $start)
     }
     set blen [expr [llength $buffer] ]
-    return [list [expr $blen + 2] [binary format ccc* $func $blen $buffer]]
-    return {}
+    return [list [expr $blen + 2] [binary format ccb* $func $blen $buffer]]
 }
 
-proc coil_5 {data} {
+proc coil_5 {func data} {
     global coilreg
     return {}
 }
 
-proc coil_15 {data} {
+proc coil_15 {func data} {
     global coilreg
     return {}
 }
