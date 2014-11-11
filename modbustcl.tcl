@@ -7,6 +7,8 @@
 
 global holdingreg
 global inputreg
+global coil
+global discrete
 
 array set functext  [list \
                      1 "Read Coils" \
@@ -30,37 +32,94 @@ array set functext  [list \
                      43 "Encapsulated Interface Transport" \
                      ]
 
+array set funcjump [list \
+                    1 {coil_1 $body} \
+                    3 {holding3 $func $body} \
+                    4 {input $func $body} \
+                    5 {coil_5 $body} \
+                    6 {holding6 $func $body} \
+                    15 {coil_15 $body} \
+                    16 {holding16 $func $body} \
+                    22 {holding22 $func $body} \
+                    ]
 
-proc coil {func data} {
-    global holdingreg
-    if { $func == 1 } {
-        binary scan $data SS start len
-        for {set i 0 } {i < [expr $len/8] } {incr i} {
-            lappend buffer 0
-        }
-        set blen [expr [llength $buffer] ]
-        return [list [expr $blen + 2] [binary format ccc* $func $blen $buffer]]
-    } elseif { $func == 5 } {
-    } elseif { $func == 15 } {
+
+proc coil_1 {data} {
+    global coilreg
+    binary scan $data SS start len
+    for {set i 0 } {i < [expr $len/8] } {incr i} {
+        lappend buffer 0
     }
+    set blen [expr [llength $buffer] ]
+    return [list [expr $blen + 2] [binary format ccc* $func $blen $buffer]]
+    return {}
+}
+
+proc coil_5 {data} {
+    global coilreg
+    return {}
+}
+
+proc coil_15 {data} {
+    global coilreg
     return {}
 }
 
 proc input {func data} {
     global inputreg
 
-    if {$func == 4 } {
-        # Read remainder of frame remember to subtract 1 for UID
-        binary scan $data SS start len
-        puts "Read input registers"
-        set end [expr $start + $len]
-        for {set i $start} {$i < $end} {incr i} {
-            lappend buffer $inputreg($i)
-        }
-        set blen [expr [llength $buffer] * 2]
-        return [list [expr $blen + 2] [binary format ccS* $func $blen $buffer]]
+    # Read remainder of frame remember to subtract 1 for UID
+    binary scan $data SS start len
+    puts "Read input registers"
+    set end [expr $start + $len]
+    for {set i $start} {$i < $end} {incr i} {
+        lappend buffer $inputreg($i)
     }
-    return {}
+    set blen [expr [llength $buffer] * 2]
+    return [list [expr $blen + 2] [binary format ccS* $func $blen $buffer]]
+}
+
+proc holding3 {func data} {
+    global holdingreg
+    binary scan $data SS start len
+    # puts "Read holding registers"
+    set end [expr $start + $len]
+    for {set i $start} {$i < $end} {incr i} {
+        lappend buffer $holdingreg($i)
+    }
+    set blen [expr [llength $buffer] * 2]
+    return [list [expr $blen + 2] [binary format ccS* $func $blen $buffer]]
+}
+
+proc holding6 {func data} {
+    global holdingreg
+    binary scan $data SS addr value
+    # puts "Write holding register $addr - $value"
+    set holdingreg($addr) $value
+    lappend buffer $holdingreg($addr)
+    return [list 5 [binary format cSS $func $addr $holdingreg($addr)]]
+}
+proc holding16 {func data} {
+    global holdingreg
+
+    binary scan $data SScS* start len bc values
+    # puts "Write multiple holding registers "
+    for { set i 0 } {$i < $len} {incr i} {
+        set pos [expr $start + $i]
+        set holdingreg($pos) [lindex $values $i]
+    }
+    return [list 5 [binary format cSS $func $start $len]]
+}
+
+proc holding22 {func data} {
+    global holdingreg
+
+    # puts "Mask Write register"
+    binary scan $data SSS addr andmask ormask
+    binary scan $holdingreg($addr) H* var
+    set $holdingreg($addr) [expr ($holdingreg($addr) & $andmask) | ($ormask & ~$andmask)]
+    binary scan $holdingreg($addr) H* var2
+    return [list 7 [binary format cSSS $func $addr $andmask $ormask]]
 }
 
 proc holding {func data} {
@@ -152,7 +211,7 @@ proc dropSocket {sock} {
 proc tcpEventRead {sock} {
     global socketdata
     global functext
-    # puts "sock is $sock"
+    global funcjump
 
     set myerror [fconfigure $sock -error]
     if {$myerror != ""} {
@@ -225,23 +284,16 @@ proc tcpEventRead {sock} {
         #puts "Recv :$var"
 
         set body $socketdata($sock,body)
-        if { [llength [set valuelist [holding $func $body]]] == 0 } {
-            if { [llength [set valuelist [input $func $body]]] == 0 } {
-            #    if { [coil  $func $body] != true} {
-            #        discrete  $func $body
-            #    }
-            }
-        }
-        clearSocketData $sock
-        if { [llength $valuelist] > 0 } {
+        if { [llength [set valuelist [eval $funcjump($func)]]] != 0 } {
             set len [expr [lindex $valuelist 0] + 1]
             set data [binary format S2Sc $mbap $len $uid]
             puts -nonewline $sock $data[lindex $valuelist 1]
             flush $sock
 
-            binary scan $data[lindex $valuelist 1] H* var
-            #puts "Sent :$var"
+            # binary scan $data[lindex $valuelist 1] H* var
+            # puts "Sent :$var"
         }
+        clearSocketData $sock
     } elseif { $datalen > [expr ($pktlen) + 6]} {
         puts "length error"
         dropSocket $sock
@@ -363,6 +415,7 @@ puts "Creating $depth holding registers"
 for {set i 0} {$i < $depth} {incr i} {
     set holdingreg($i) 0
     set inputreg($i) 0
+    set coil($i) 0
 }
 
 set filename /var/log/testfifo
