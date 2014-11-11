@@ -4,11 +4,32 @@
 # The server currently only handles holding and input register
 # types but the basic proincipal can be applied to coil etc.
 
-# It has no error handling but this is trivial to add someone
-# needs to write the code
 
 global holdingreg
 global inputreg
+
+array set functext  [list \
+                     1 "Read Coils" \
+                     2 "Read Discrete inputs" \
+                     3 "Read Holding register" \
+                     4 "Read Input register" \
+                     5 "Write single Coil" \
+                     6 "Write single Holding register" \
+                     7 "Read exception status" \
+                     8 "Diagnostic serial" \
+                     11 "Get Comm Event Counter" \
+                     12 "Get Comm Event Log" \
+                     15 "Write Multiple Coils" \
+                     16 "Write multiple Holding registers" \
+                     17 "Report Server ID" \
+                     20 "Read File Record" \
+                     21 "Write File Record" \
+                     22 "Mask Write holding register" \
+                     23 "ReadWrite Multiple Registers" \
+                     24 "Read FIFO Queue" \
+                     43 "Encapsulated Interface Transport" \
+                     ]
+
 
 proc coil {func data} {
     global holdingreg
@@ -79,25 +100,38 @@ proc holding {func data} {
     return {}
 }
 
-
+# This is here for the sake of brevity in the main block
 proc clearSocketData {sock} {
     global socketdata
-    # cleanout any monitor timer
+    # This needs to be here
     if {[info exists socketdata($sock,timer)]} {
-        catch {after cancel $socketdata($sock,timer)}
+        after cancel $socketdata($sock,timer)
     }
 
+    # Clear out everything I can't remember creating
     foreach v [array names socketdata "$sock,*"] {
         set socketdata($v) {}
     }
+
+    # These need to exist otherwise they have to be surrounded with
+    # exists tests in the code, it's simpler to create them here
+    set socketdata($sock,head) {}
+    set socketdata($sock,body) {}
     set socketdata($sock,txt) ""
+
+    # The timer needs to be here as this is run after every packet
+    # and after the socket is created
+    set socketdata($sock,timer) [after 5000 [list dropSocket $sock]]
 }
 
 proc dropSocket {sock} {
     global socketdata
     puts "dropping socket $sock"
     catch {close $sock}
-    clearSocketData $sock
+    # cleanout any monitor timer
+    if {[info exists socketdata($sock,timer)]} {
+        catch {after cancel $socketdata($sock,timer)}
+    }
     catch {
         array unset socketdata "$sock,*"
         unset socketdata($sock)
@@ -113,10 +147,11 @@ proc dropSocket {sock} {
 # The intent is to use the native TCL event loop and no other libraries
 # to achieve this task.
 #
-# Currently a race condition somewhere
+# Appears to work ok
 ###########################################################################
 proc tcpEventRead {sock} {
     global socketdata
+    global functext
     # puts "sock is $sock"
 
     set myerror [fconfigure $sock -error]
@@ -125,43 +160,51 @@ proc tcpEventRead {sock} {
         return
     }
 
+    # The timer is not necessary but it is expected any access to the server
+    # to be frequent so a 5 second wait is appropriate after which the client
+    # has probably died and this end needs to be cleaned up.
+    #
+    # This should probably be a config or command line option.
     if {[info exists socketdata($sock,timer)]} {
         catch {after cancel $socketdata($sock,timer)}
     }
     set socketdata($sock,timer) [after 5000 [list dropSocket $sock]]
 
-    # Get the first 8 bytes
-    if {[string length $socketdata($sock,txt)] < 16} {
-        set len [expr 8 - ([string length $socketdata($sock,txt)] / 2)]
+    # Get the first 8 bytes, there is no pint getting anything less for this app
+    # The MODTCP MBAP has a bunch of stuff that is never used here as this is not
+    # a multi server setup.
+    #
+    # The text representation of the data is used for length as I currently can
+    # not assure that
+    set curlen [string length $socketdata($sock,head)]
+    if {$curlen < 8} {
+        set len [expr 8 - $curlen]
         set head [read $sock $len]
         if {$head == {}}  {
             dropSocket $sock
             return
         }
-
         # Append data to struct
         set socketdata($sock,head) $socketdata($sock,head)$head
-        binary scan $socketdata($sock,head) H* var
-        set socketdata($sock,txt) $var
-        set socketdata($sock,body) {}
+        # binary scan $socketdata($sock,head) H* var
+        # set socketdata($sock,txt) $var
         # puts "Read :$var"
     }
 
     # check if short packet as will need to go round the loop again
-    set curlen [string length $socketdata($sock,txt)]
-    if {$curlen < 16} {
+    set curlen [string length $socketdata($sock,head)]
+    if {$curlen < 8} {
         return
     }
 
     # By now have enough info to start defining remainder of the packet
     binary scan $socketdata($sock,head) S2Scc mbap pktlen uid func
-    # puts "curlen :$curlen, pktlen:$pktlen"
 
     # calcalate the remaining length
-    set remlen [expr ($pktlen + 6) - $curlen/2]
+    set remlen [expr ($pktlen + 6) - $curlen]
     #sanity check, no currently handled packet can be less than the header
     if {$remlen <= 0} {
-        # puts "curlen :$curlen, pktlen:$pktlen"
+        puts "curlen :$curlen, pktlen:$pktlen"
         dropSocket $sock
         return
     }
@@ -170,16 +213,18 @@ proc tcpEventRead {sock} {
     set data [read $sock $remlen]
     if {$data == {}}  {
         dropSocket $sock
-        exit
+        return
     }
     set socketdata($sock,body) $socketdata($sock,body)$data
-    binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
+    set datalen [string length $socketdata($sock,head)$socketdata($sock,body)]
 
-    # puts "expected: [expr ($pktlen*2) + 12], got: [string length $var], block :$var"
-    if { [string length $var] == [expr ($pktlen*2) + 12]} {
-        # puts "Processing $sock"
+    if { $datalen == [expr ($pktlen) + 6]} {
+        #puts "Processing $functext($func)"
+        #puts "datalen :$datalen pktlen:$pktlen"
+        #binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
+        #puts "Recv :$var"
+
         set body $socketdata($sock,body)
-        clearSocketData $sock
         if { [llength [set valuelist [holding $func $body]]] == 0 } {
             if { [llength [set valuelist [input $func $body]]] == 0 } {
             #    if { [coil  $func $body] != true} {
@@ -187,7 +232,7 @@ proc tcpEventRead {sock} {
             #    }
             }
         }
-
+        clearSocketData $sock
         if { [llength $valuelist] > 0 } {
             set len [expr [lindex $valuelist 0] + 1]
             set data [binary format S2Sc $mbap $len $uid]
@@ -195,55 +240,12 @@ proc tcpEventRead {sock} {
             flush $sock
 
             binary scan $data[lindex $valuelist 1] H* var
-            puts "Sent :$var"
+            #puts "Sent :$var"
         }
-    } elseif { [string length $var] > [expr ($pktlen*2) + 12]} {
+    } elseif { $datalen > [expr ($pktlen) + 6]} {
         puts "length error"
         dropSocket $sock
-        exit
-    }
-}
-
-
-
-#########################################################################
-# This is effective for reads when packets arrive complete.
-# It has issues when partial packets are received.
-#########################################################################
-
-proc readNetTCP {channel} {
-    # Read the MBAP header including UID
-    set head {}
-    set head [read $channel 8]
-    binary scan $head H* var
-
-    if { $head == "" } {
-        # puts "Empty head"
-        close $channel
         return
-    }
-    binary scan $head S2Scc mbap pktlen uid func
-    set body [read $channel [expr $pktlen - 2]]
-    puts "mbap:$mbap, PKTLEN:$pktlen UID:$uid func:$func"
-    binary scan $body H* bvar
-    puts "Read :$var$bvar"
-
-    if { [llength [set valuelist [holding $func $body]]] == 0 } {
-        if { [llength [set valuelist [input $func $body]]] == 0 } {
-        #    if { [coil  $func $body] != true} {
-        #        discrete  $func $body
-        #    }
-        }
-    }
-
-    if { [llength $valuelist] > 0 } {
-        set len [expr [lindex $valuelist 0] + 1]
-        set data [binary format S2Sc $mbap $len $uid]
-        puts -nonewline $channel $data[lindex $valuelist 1]
-        flush $channel
-
-        binary scan $data[lindex $valuelist 1] H* var
-        puts "Sent :$var"
     }
 }
 
@@ -276,7 +278,8 @@ set rtulen(16) [list 5 5]
 set rtulen(3) 4
 set rtulen(3) 4
 set rtulen(3) 4
-proc readRTU {channel} {
+
+proc serialEventRTU {channel} {
     global holdingreg
 
     set head [read $channel 2]
@@ -324,12 +327,8 @@ proc connect {channel clientaddr clientport} {
     puts "Connecting from $clientaddr $clientport"
     fconfigure $channel -translation binary
     fconfigure $channel -blocking 0
-    # fileevent $channel readable [list readNetTCP $channel]
     fileevent $channel readable [list tcpEventRead $channel]
-    # fileevent $channel writable [list tcpCheck $channel]
-    set socketdata($channel,head) {}
-    #set socketdata($channel,rcv) {}
-    set socketdata($channel,txt) ""
+    clearSocketData $channel
 }
 
 proc showHelp {} {
@@ -339,8 +338,9 @@ proc showHelp {} {
     puts "The default port is 5020"
     puts "No help really as this is just a simple holding reg TCP modbus implementation"
     puts "--------------------------------------------------------------------------"
-    puts "Supported codes are 3,6,16 and 22"
-    puts "3 - Read reagister"
+    puts "Supported codes are 3,4,6,16 and 22"
+    puts "3 - Read holding reagister"
+    puts "4 - Read input reagister"
     puts "6 - Write register"
     puts "16 - Write multiple registers"
     puts "22 - Mask write register"
