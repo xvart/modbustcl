@@ -4,6 +4,17 @@
 # The server currently only handles holding and input register
 # types but the basic proincipal can be applied to coil etc.
 
+package require crc16
+
+# Need to rewrite the GP (generating polynomial) to match modbus spec
+# Lucky for us the internal lookup table is generated as needed
+# that is when the CRC calc is requested the first time
+# Original poly is:  or 0x8005
+# set polynomial(crc16) [expr {(1<<16) | (1<<15) | (1<<2) | 1}]
+# modbus GP is 0xA001 or [1<<15 | 1<<13 | 1]
+# binary scan "A001" H* var
+# set crc::polynomial(crc16) $var
+set crc::polynomial(crc16) [expr {(1<<15) | (1<<13) | 1}]
 
 global holdingreg
 global inputreg
@@ -358,7 +369,8 @@ proc serialEventRTU {channel} {
     if { [llength $valuelist] > 0 } {
         set len [expr [lindex $valuelist 0] + 1]
         set data [binary format cc $addr $func]
-        puts -nonewline $channel $data[lindex $valuelist 1]
+        set mycrc [crc16 $data[lindex $valuelist 1]]
+        puts -nonewline $channel $data[lindex $valuelist 1]$mycrc
         flush $channel
 
         #binary scan $data[lindex $valuelist 1] H* var
