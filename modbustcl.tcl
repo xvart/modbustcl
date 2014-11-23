@@ -299,7 +299,7 @@ proc tcpEventRead {sock} {
         #puts "Recv :$var"
 
         set body $socketdata($sock,body)
-        if { [llength [set valuelist [eval $funcjump($func)]]] != 0 } {
+        if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
             set len [expr [lindex $valuelist 0] + 1]
             set data [binary format S2Sc $mbap $len $uid]
             puts -nonewline $sock $data[lindex $valuelist 1]
@@ -322,12 +322,12 @@ proc tcpEventRead {sock} {
 # to enable the reuse of the same procedures that are used by the TCP
 # code
 set rtulen(0) {binary ccSSS* $data}
-set rtulen(1) 4
-set rtulen(2) 4
-set rtulen(3) 4
-set rtulen(4) 4
-set rtulen(5) 4
-set rtulen(6) 4
+set rtulen(1) 6
+set rtulen(2) 6
+set rtulen(3) 6
+set rtulen(4) 6
+set rtulen(5) 6
+set rtulen(6) 6
 set rtulen(7) 0
 set rtulen(11) 0
 set rtulen(12) 0
@@ -342,9 +342,7 @@ set rtulen(12) 0
 # to indicate which word is the length
 
 set rtulen(16) [list 5 5]
-set rtulen(3) 4
-set rtulen(3) 4
-set rtulen(3) 4
+set rtulen(22) 8
 
 proc serialEventRTU {channel} {
     global holdingreg
@@ -353,30 +351,16 @@ proc serialEventRTU {channel} {
     binary scan $data cc addr func
     if {[info exists rtulen($func)]} {
         set body [read $channel 2]
-    } else {
-        return
-    }
-
-    # puts "addr:$addr, func:$func $start $len"
-    set end [expr $start + $len]
-    if { [llength [set valuelist [holding $func $body]]] == 0 } {
-        if { [llength [set valuelist [input $func $body]]] == 0 } {
-        #    if { [coil  $func $body] != true} {
-        #        discrete  $func $body
-        #    }
+        if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
+            set len [expr [lindex $valuelist 0] + 1]
+            set data [binary format cc $addr $func]
+            set mycrc [crc16 $data[lindex $valuelist 1]]
+            puts -nonewline $channel $data[lindex $valuelist 1]$mycrc
+            flush $channel
+            # binary scan $data[lindex $valuelist 1] H* var
+            # puts "Sent :$var"
         }
     }
-    if { [llength $valuelist] > 0 } {
-        set len [expr [lindex $valuelist 0] + 1]
-        set data [binary format cc $addr $func]
-        set mycrc [crc16 $data[lindex $valuelist 1]]
-        puts -nonewline $channel $data[lindex $valuelist 1]$mycrc
-        flush $channel
-
-        #binary scan $data[lindex $valuelist 1] H* var
-        #puts "Sent :$var"
-    }
-    flush $channel
 }
 
 proc tcpCheck {channel} {
