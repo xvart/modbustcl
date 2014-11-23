@@ -349,6 +349,8 @@ proc serialEventRTU {channel} {
 
     set head [read $channel 2]
     binary scan $data cc addr func
+
+    # Read in the remainder of the frame
     if {[info exists rtulen($func)]} {
         set body [read $channel 2]
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
