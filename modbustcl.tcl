@@ -302,10 +302,14 @@ proc tcpEventRead {sock} {
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
             set len [expr [lindex $valuelist 0] + 1]
             set data [binary format S2Sc $mbap $len $uid]
-            puts -nonewline $sock $data[lindex $valuelist 1]
+
+            # marshal up the data
+            set txbuffer $data[lindex $valuelist 1]
+            # puts -nonewline $sock $data[lindex $valuelist 1]
+            puts -nonewline $sock $txbuffer
             flush $sock
 
-            # binary scan $data[lindex $valuelist 1] H* var
+            # binary scan $txbuffer H* var
             # puts "Sent :$var"
         }
         clearSocketData $sock
@@ -350,11 +354,16 @@ proc serialEventRTU {channel} {
     set head [read $channel 2]
     binary scan $data cc addr func
 
-    # Read in the remainder of the frame
+    # Verify we know how to deal with this
+    # then read in the remainder of the frame
     if {[info exists rtulen($func)]} {
-        set body [read $channel 2]
+
+        # get rest of frame
+        set body [read $channel $rtulen($func)]
+
+        # process the frame
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
-            set len [expr [lindex $valuelist 0] + 1]
+            # set len [expr [lindex $valuelist 0] + 1]
             set data [binary format cc $addr $func]
             set mycrc [crc16 $data[lindex $valuelist 1]]
             puts -nonewline $channel $data[lindex $valuelist 1]$mycrc
@@ -362,6 +371,118 @@ proc serialEventRTU {channel} {
             # binary scan $data[lindex $valuelist 1] H* var
             # puts "Sent :$var"
         }
+    } else {
+        # throw away unknown frame
+        read $channel 8
+    }
+}
+##########################################################################
+# socketdata
+# socketdata managers the receive counters for a socket
+# as the interface is in nonblock mode it can receive
+# any number of bytes so state needs to be managed.
+#
+# The intent is to use the native TCL event loop and no other libraries
+# to achieve this task.
+#
+# Appears to work ok
+###########################################################################
+proc tcpRTUEventRead {sock} {
+    global socketdata
+    global functext
+    global funcjump
+
+    set myerror [fconfigure $sock -error]
+    if {$myerror != ""} {
+        dropSocket $sock
+        return
+    }
+
+    # The timer is not necessary but it is expected any access to the server
+    # to be frequent so a 5 second wait is appropriate after which the client
+    # has probably died and this end needs to be cleaned up.
+    #
+    # This should probably be a config or command line option.
+    if {[info exists socketdata($sock,timer)]} {
+        catch {after cancel $socketdata($sock,timer)}
+    }
+    set socketdata($sock,timer) [after 5000 [list dropSocket $sock]]
+
+    # Get the first 2 bytes, there is no pint getting anything less for this app
+    # The RTU over TCP has a bunch of stuff that is never used here as this is not
+    # a multi server setup.
+    #
+    set curlen [string length $socketdata($sock,head)]
+    if {$curlen < 2} {
+        set len [expr 2 - $curlen]
+        set head [read $sock $len]
+        if {$head == {}}  {
+            dropSocket $sock
+            return
+        }
+        # Append data to struct
+        set socketdata($sock,head) $socketdata($sock,head)$head
+
+        # binary scan $socketdata($sock,head) H* var
+        # set socketdata($sock,txt) $var
+        # puts "Read :$var"
+    }
+
+    # check if short packet as will need to go round the loop again
+    set curlen [string length $socketdata($sock,head)]
+    if {$curlen < 2} {
+        return
+    }
+
+    # By now have enough info to start defining remainder of the packet
+    binary scan $socketdata($sock,head) cc addr func
+
+    # calcalate the remaining length
+    set remlen [expr ($rtulen($func) + 2) - $curlen]
+    #sanity check, no currently handled packet can be less than the header
+    if {$remlen <= 0} {
+        puts "curlen :$curlen, pktlen:$pktlen"
+        dropSocket $sock
+        return
+    }
+
+    # append to data
+    set data [read $sock $remlen]
+    if {$data == {}}  {
+        dropSocket $sock
+        return
+    }
+
+    set socketdata($sock,body) $socketdata($sock,body)$data
+    set datalen [string length $socketdata($sock,head)$socketdata($sock,body)]
+
+    if { $datalen == [expr ($pktlen) + 6]} {
+        #puts "Processing $functext($func)"
+        #puts "datalen :$datalen pktlen:$pktlen"
+        #binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
+        #puts "Recv :$var"
+
+        set body $socketdata($sock,body)
+        if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
+            set data [binary format cc $addr $func]
+            set mycrc [crc16 $data[lindex $valuelist 1]]
+
+            # marshal up all the data
+            set txbuffer $data[lindex $valuelist 1]$mycrc
+            # puts -nonewline $sock $data[lindex $valuelist 1]$mycrc
+            puts -nonewline $sock $txbuffer
+            flush $sock
+
+            # debug out
+            # binary scan $data[lindex $valuelist 1]$mycrc H* var
+            # binary scan $txbuffer H* var
+            # puts "Sent :$var"
+        }
+        clearSocketData $sock
+    } elseif { $datalen > [expr ($pktlen) + 6]} {
+        puts "length error"
+        dropSocket $sock
+        return
     }
 }
 
