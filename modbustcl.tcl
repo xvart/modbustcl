@@ -59,6 +59,30 @@ array set funcjump [list \
                     22 {holding22 $func $body} \
                     ]
 
+# Only need this for connection to serial to ethernet adapters
+# RTU from a serial line presents a problem in that no initial
+# length gets received as such some magic needs to be done up front
+# to enable the reuse of the same procedures that are used by the TCP
+# code
+set rtulen(1) 6
+# set rtulen(2) 6
+set rtulen(3) 6
+set rtulen(4) 6
+set rtulen(5) 6
+set rtulen(6) 6
+set rtulen(7) 0
+
+# after this things get complicated so the format needs to change
+# messages from HEX 10 and up supply a variable length data field.
+#
+# When reading from a serial line we have no packet structure to do
+# all the annoying packet stuff so here the length of the data field
+# needs to be extracted from the serial input.
+#
+# The array now needs to include a sub header length with a marker
+# to indicate which word is the length
+set rtulen(16) [list variable 6]
+set rtulen(22) [list variable 8]
 
 # coil data
 # coils are 1 per array location???
@@ -322,34 +346,6 @@ proc tcpEventRead {sock} {
     }
 }
 
-# Only need this for connection to serial to ethernet adapters
-# RTU from a serial line presents a problem in that no initial
-# length gets received as such some magic needs to be done up front
-# to enable the reuse of the same procedures that are used by the TCP
-# code
-set rtulen(0) {binary ccSSS* $data}
-set rtulen(1) 6
-set rtulen(2) 6
-set rtulen(3) 6
-set rtulen(4) 6
-set rtulen(5) 6
-set rtulen(6) 6
-set rtulen(7) 0
-set rtulen(11) 0
-set rtulen(12) 0
-# after this things get complicated so the format needs to change
-# messages from HEX 10 and up supply a variable length data field.
-#
-# When reading from a serial line we have no packet structure to do
-# all the annoying packet stuff so here the length of the data field
-# needs to be extracted from the serial input.
-#
-# The array now needs to include a sub header length with a marker
-# to indicate which word is the length
-
-set rtulen(16) [list 5 5]
-set rtulen(22) 8
-
 proc serialEventRTU {channel} {
     global holdingreg
 
@@ -362,6 +358,7 @@ proc serialEventRTU {channel} {
 
         # get rest of frame
         set body [read $channel $rtulen($func)]
+
 
         # process the frame
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
