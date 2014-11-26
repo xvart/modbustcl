@@ -368,6 +368,8 @@ proc serialEventRTU {channel} {
             # set len [expr [lindex $valuelist 0] + 1]
             set data [binary format cc $addr $func]
             set mycrc [crc::crc16 -format %04X -seed 0xFFFF $data[lindex $valuelist 1]]
+            # I could do the following in 1 line but I want to make it clear
+            # that these get swapped
             set high [string range $mycrc 0 1]
             set low [string range $mycrc 2 end]
             set mycrc $low$high
@@ -478,8 +480,10 @@ proc tcpRTUEventRead {sock} {
         set body $socketdata($sock,body)
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
             set data [binary format cc $addr $func]
-
             set mycrc [crc::crc16 -format %04X -seed 0xFFFF $data[lindex $valuelist 1]]
+
+            # I could do the following in 1 line but I want to make
+            # it clear that these get swapped
             set high [string range $mycrc 0 1]
             set low [string range $mycrc 2 end]
             # re-arrange mycrc
