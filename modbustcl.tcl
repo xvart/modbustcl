@@ -14,7 +14,9 @@ package require crc16
 # modbus GP is 0xA001 or [1<<15 | 1<<13 | 1]
 # binary scan "A001" H* var
 # set crc::polynomial(crc16) $var
-set crc::polynomial(crc16) [expr {(1<<15) | (1<<13) | 1}]
+# set crc::polynomial(crc16) [expr {(1<<15) | (1<<13) | 1}]
+# changing poly breaks remote server
+# set crc::polynomial(crc16) 0xA001
 
 global holdingreg
 global inputreg
@@ -365,8 +367,15 @@ proc serialEventRTU {channel} {
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
             # set len [expr [lindex $valuelist 0] + 1]
             set data [binary format cc $addr $func]
-            set mycrc [crc16 $data[lindex $valuelist 1]]
-            puts -nonewline $channel $data[lindex $valuelist 1]$mycrc
+            set mycrc [crc::crc16 -format %04X -seed 0xFFFF $data[lindex $valuelist 1]]
+            set high [string range $mycrc 0 1]
+            set low [string range $mycrc 2 end]
+            set mycrc $low$high
+
+            # marshal up all the data
+            set txbuffer $data[lindex $valuelist 1][binary format H* $mycrc]
+
+            puts -nonewline $channel $txbuffer
             flush $channel
             # binary scan $data[lindex $valuelist 1] H* var
             # puts "Sent :$var"
@@ -386,8 +395,13 @@ proc serialEventRTU {channel} {
 # to achieve this task.
 #
 # Appears to work ok
+# Three requests from modbus
+# 01030000003c45db
+# 010300c900321421
+# 01030064004685e7
 ###########################################################################
 proc tcpRTUEventRead {sock} {
+    global rtulen
     global socketdata
     global functext
     global funcjump
@@ -406,7 +420,7 @@ proc tcpRTUEventRead {sock} {
     if {[info exists socketdata($sock,timer)]} {
         catch {after cancel $socketdata($sock,timer)}
     }
-    set socketdata($sock,timer) [after 5000 [list dropSocket $sock]]
+    set socketdata($sock,timer) [after 15000 [list dropSocket $sock]]
 
     # Get the first 2 bytes, there is no pint getting anything less for this app
     # The RTU over TCP has a bunch of stuff that is never used here as this is not
@@ -456,30 +470,34 @@ proc tcpRTUEventRead {sock} {
     set socketdata($sock,body) $socketdata($sock,body)$data
     set datalen [string length $socketdata($sock,head)$socketdata($sock,body)]
 
-    if { $datalen == [expr ($pktlen) + 6]} {
-        #puts "Processing $functext($func)"
-        #puts "datalen :$datalen pktlen:$pktlen"
-        #binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
-        #puts "Recv :$var"
+    if { $datalen == [expr $rtulen($func) + 2]} {
+        puts "Processing $functext($func)"
+        binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
+        puts "Recv :$var"
 
         set body $socketdata($sock,body)
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
             set data [binary format cc $addr $func]
-            set mycrc [crc16 $data[lindex $valuelist 1]]
+
+            set mycrc [crc::crc16 -format %04X -seed 0xFFFF $data[lindex $valuelist 1]]
+            set high [string range $mycrc 0 1]
+            set low [string range $mycrc 2 end]
+            # re-arrange mycrc
+            set mycrc $low$high
 
             # marshal up all the data
-            set txbuffer $data[lindex $valuelist 1]$mycrc
-            # puts -nonewline $sock $data[lindex $valuelist 1]$mycrc
+            set txbuffer $data[lindex $valuelist 1][binary format H* $mycrc]
             puts -nonewline $sock $txbuffer
             flush $sock
 
             # debug out
             # binary scan $data[lindex $valuelist 1]$mycrc H* var
-            # binary scan $txbuffer H* var
-            # puts "Sent :$var"
+            # puts "mycrc $mycrc"
+            binary scan $txbuffer H* var
+            puts "Sent :$var"
         }
         clearSocketData $sock
-    } elseif { $datalen > [expr ($pktlen) + 6]} {
+    } elseif { $datalen > [expr $rtulen($func) + 2]} {
         puts "length error"
         dropSocket $sock
         return
@@ -502,7 +520,8 @@ proc connect {channel clientaddr clientport} {
     puts "Connecting from $clientaddr $clientport"
     fconfigure $channel -translation binary
     fconfigure $channel -blocking 0
-    fileevent $channel readable [list tcpEventRead $channel]
+#    fileevent $channel readable [list tcpEventRead $channel]
+    fileevent $channel readable [list tcpRTUEventRead $channel]
     clearSocketData $channel
 }
 
