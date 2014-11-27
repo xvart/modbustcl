@@ -93,6 +93,7 @@ proc binaryPrint {data} {
 # coils are 1 per array location???
 proc coil_1 {func data} {
     global coilreg
+
     binary scan $data SS start len
     for {set i 0 } {i < $len } {incr i} {
         lappend buffer $coilreg([expr $i + $start)
@@ -103,19 +104,20 @@ proc coil_1 {func data} {
 
 proc coil_5 {func data} {
     global coilreg
+
     return {}
 }
 
 proc coil_15 {func data} {
     global coilreg
+
     return {}
 }
 
 proc input {func data} {
     global inputreg
-    # Read remainder of frame remember to subtract 1 for UID
+
     binary scan $data SS start len
-    puts "Read input registers"
     set end [expr $start + $len]
     for {set i $start} {$i < $end} {incr i} {
         lappend buffer $inputreg($i)
@@ -126,8 +128,8 @@ proc input {func data} {
 
 proc holding3 {func data} {
     global holdingreg
+
     binary scan $data SS start len
-    # puts "Read holding registers"
     set end [expr $start + $len]
     for {set i $start} {$i < $end} {incr i} {
         lappend buffer $holdingreg($i)
@@ -138,8 +140,8 @@ proc holding3 {func data} {
 
 proc holding6 {func data} {
     global holdingreg
+
     binary scan $data SS addr value
-    # puts "Write holding register $addr - $value"
     set reg $holdingreg($addr)
     set holdingreg($addr) $value
     lappend buffer $holdingreg($addr)
@@ -157,7 +159,6 @@ proc holding16 {func data} {
     global holdingreg
 
     binary scan $data SScS* start len bc values
-    # puts "Write multiple holding registers "
     for { set i 0 } {$i < $len} {incr i} {
         set pos [expr $start + $i]
         set holdingreg($pos) [lindex $values $i]
@@ -170,10 +171,11 @@ proc holding16 {func data} {
 # holdingreg is binary
 proc holding22 {func data} {
     global holdingreg
-    binary scan $data H* tmp
+
     binary scan $data SSS addr andmask ormask
     set reg $holdingreg($addr)
     set holdingreg($addr) [expr ($reg & $andmask) | ($ormask & ~$andmask)]
+
     if {$reg != $holdingreg($addr)} {
         set reg [format "%04X" $reg]
         set new [format "%04X" $holdingreg($addr)]
@@ -225,6 +227,7 @@ proc holding {func data} {
 # This is here for the sake of brevity in the main block
 proc clearSocketData {sock} {
     global socketdata
+
     # This needs to be here
     if {[info exists socketdata($sock,timer)]} {
         after cancel $socketdata($sock,timer)
@@ -246,18 +249,18 @@ proc clearSocketData {sock} {
     set socketdata($sock,timer) [after 5000 [list dropSocket $sock]]
 }
 
+#########################################################################
 proc dropSocket {sock} {
     global socketdata
-    puts "dropping socket $sock"
+
+    puts "Dropping socket $sock"
     catch {close $sock}
     # cleanout any monitor timer
     if {[info exists socketdata($sock,timer)]} {
         catch {after cancel $socketdata($sock,timer)}
     }
-    catch {
-        array unset socketdata "$sock,*"
-        unset socketdata($sock)
-    }
+    catch {array unset socketdata "$sock,*"}
+    catch {unset socketdata($sock)}
 }
 
 ##########################################################################
@@ -341,7 +344,6 @@ proc tcpEventRead {sock} {
     set datalen [string length $socketdata($sock,head)$socketdata($sock,body)]
 
     if { $datalen == [expr ($pktlen) + 6]} {
-        # debug
         binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
         puts "$functext($func),Recv :$var"
 
@@ -590,24 +592,23 @@ proc modtcpConnect {channel clientaddr clientport} {
 
 proc showHelp {} {
     global funcjump
+    global functext
     puts "Help stuff"
     puts "usage bintest.tcl <register size> <port>"
     puts "The default register size is 512"
     puts "The default port is 5020"
     puts "No help really as this is just a simple holding reg TCP modbus implementation"
+    puts ""
     puts "--------------------------------------------------------------------------"
-    puts "Supported codes are 3,4,6,16 and 22"
-    parray funcjump
-    puts "3 - Read holding reagister"
-    puts "4 - Read input reagister"
-    puts "6 - Write register"
-    puts "16 - Write multiple registers"
-    puts "22 - Mask write register"
+    puts "Supported codes [join [lsort -integer -increasing [array names funcjump]] {,}]"
+    foreach name [lsort -integer -increasing [array names funcjump]] {
+        puts "$name - $functext($name)"
+    }
     puts "--------------------------------------------------------------------------"
+    puts ""
 }
 
 showHelp
-
 
 set depth 512
 if {$::argc > 0 } {
@@ -626,13 +627,6 @@ for {set i 0} {$i < $depth} {incr i} {
     set inputreg($i) [binary format H* "0101"]
     set coil($i) 0
 }
-
-# foreach name [array names holdingreg] {
-#    binary scan $holdingreg($name) H* var
-#    puts "holdingreg($name) = $var"
-# }
-
-# parray holdingreg
 
 # initialise heartbeat counter
 set holdingreg(0) 0
