@@ -84,6 +84,11 @@ set rtulen(7) 0
 set rtulen(16) 6
 set rtulen(22) 8
 
+proc binaryPrint {data} {
+    binary scan $data H* var
+    puts $var
+}
+
 # coil data
 # coils are 1 per array location???
 proc coil_1 {func data} {
@@ -108,7 +113,6 @@ proc coil_15 {func data} {
 
 proc input {func data} {
     global inputreg
-
     # Read remainder of frame remember to subtract 1 for UID
     binary scan $data SS start len
     puts "Read input registers"
@@ -136,8 +140,16 @@ proc holding6 {func data} {
     global holdingreg
     binary scan $data SS addr value
     # puts "Write holding register $addr - $value"
+    set reg $holdingreg($addr)
     set holdingreg($addr) $value
     lappend buffer $holdingreg($addr)
+
+    if {$reg != $holdingreg($addr)} {
+        set reg [format "%04X" $reg]
+        set new [format "%04X" $holdingreg($addr)]
+        puts "$reg > $new"
+    }
+
     return [list 5 [binary format cSS $func $addr $holdingreg($addr)]]
 }
 
@@ -159,11 +171,14 @@ proc holding16 {func data} {
 proc holding22 {func data} {
     global holdingreg
     binary scan $data H* tmp
-
     binary scan $data SSS addr andmask ormask
     set reg $holdingreg($addr)
-    # puts "reg = $holdingreg($addr)"
     set holdingreg($addr) [expr ($reg & $andmask) | ($ormask & ~$andmask)]
+    if {$reg != $holdingreg($addr)} {
+        set reg [format "%04X" $reg]
+        set new [format "%04X" $holdingreg($addr)]
+        puts "$reg > $new"
+    }
     # puts "reg = $holdingreg($addr)"
 
     return [list 7 [binary format cSSS $func $addr $andmask $ormask]]
@@ -445,8 +460,8 @@ proc tcpRTUEventRead {sock} {
         # Append data to struct
         set socketdata($sock,head) $socketdata($sock,head)$head
 
-        # binary scan $socketdata($sock,head) H* var
-        # puts "Read :$var"
+        # puts -nonewline "Read :"
+        # binaryPrint $socketdata($sock,head)
         set curlen [string length $socketdata($sock,head)]
         set socketdata($sock,body) {}
     }
@@ -517,10 +532,9 @@ proc tcpRTUEventRead {sock} {
             flush $sock
 
             # debug out
-            # binary scan $data[lindex $valuelist 1]$mycrc H* var
-            # puts "mycrc $mycrc"
-            # binary scan $txbuffer H* var
-            # puts "Sent :$var"
+            # puts -nonewline "Sent :"
+            # binaryPrint $txbuffer
+
         }
         ##################################################################
         # this in a special for an application where holding reg 0 is used
