@@ -81,8 +81,8 @@ set rtulen(7) 0
 #
 # The array now needs to include a sub header length with a marker
 # to indicate which word is the length
-set rtulen(16) [list variable 6]
-set rtulen(22) [list variable 8]
+set rtulen(16) 6
+set rtulen(22) 8
 
 # coil data
 # coils are 1 per array location???
@@ -140,6 +140,7 @@ proc holding6 {func data} {
     lappend buffer $holdingreg($addr)
     return [list 5 [binary format cSS $func $addr $holdingreg($addr)]]
 }
+
 proc holding16 {func data} {
     global holdingreg
 
@@ -152,17 +153,23 @@ proc holding16 {func data} {
     return [list 5 [binary format cSS $func $start $len]]
 }
 
+###########################################################################
+# data is binary
+# holdingreg is binary
 proc holding22 {func data} {
     global holdingreg
+    binary scan $data H* tmp
 
-    # puts "Mask Write register"
     binary scan $data SSS addr andmask ormask
-    binary scan $holdingreg($addr) H* var
-    set $holdingreg($addr) [expr ($holdingreg($addr) & $andmask) | ($ormask & ~$andmask)]
-    binary scan $holdingreg($addr) H* var2
+    set reg $holdingreg($addr)
+    # puts "reg = $holdingreg($addr)"
+    set holdingreg($addr) [expr ($reg & $andmask) | ($ormask & ~$andmask)]
+    # puts "reg = $holdingreg($addr)"
+
     return [list 7 [binary format cSSS $func $addr $andmask $ormask]]
 }
 
+###########################################################################
 proc holding {func data} {
     global holdingreg
 
@@ -268,7 +275,7 @@ proc tcpEventRead {sock} {
     if {[info exists socketdata($sock,timer)]} {
         catch {after cancel $socketdata($sock,timer)}
     }
-    set socketdata($sock,timer) [after 5000 [list dropSocket $sock]]
+    set socketdata($sock,timer) [after 15000 [list dropSocket $sock]]
 
     # Get the first 8 bytes, there is no pint getting anything less for this app
     # The MODTCP MBAP has a bunch of stuff that is never used here as this is not
@@ -319,10 +326,9 @@ proc tcpEventRead {sock} {
     set datalen [string length $socketdata($sock,head)$socketdata($sock,body)]
 
     if { $datalen == [expr ($pktlen) + 6]} {
-        #puts "Processing $functext($func)"
-        #puts "datalen :$datalen pktlen:$pktlen"
-        #binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
-        #puts "Recv :$var"
+        # debug
+        binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
+        puts "$functext($func),Recv :$var"
 
         set body $socketdata($sock,body)
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
@@ -384,6 +390,7 @@ proc serialEventRTU {channel} {
         read $channel 8
     }
 }
+
 ##########################################################################
 # socketdata
 # socketdata managers the receive counters for a socket
@@ -398,8 +405,10 @@ proc serialEventRTU {channel} {
 # 01030000003c45db
 # 010300c900321421
 # 01030064004685e7
+# 01160068fdfd00003793
 ###########################################################################
 proc tcpRTUEventRead {sock} {
+    global holdingreg
     global rtulen
     global socketdata
     global functext
@@ -419,7 +428,7 @@ proc tcpRTUEventRead {sock} {
     if {[info exists socketdata($sock,timer)]} {
         catch {after cancel $socketdata($sock,timer)}
     }
-    set socketdata($sock,timer) [after 15000 [list dropSocket $sock]]
+    set socketdata($sock,timer) [after 5000 [list dropSocket $sock]]
 
     # Get the first 2 bytes, there is no pint getting anything less for this app
     # The RTU over TCP has a bunch of stuff that is never used here as this is not
@@ -437,24 +446,34 @@ proc tcpRTUEventRead {sock} {
         set socketdata($sock,head) $socketdata($sock,head)$head
 
         # binary scan $socketdata($sock,head) H* var
-        # set socketdata($sock,txt) $var
         # puts "Read :$var"
+        set curlen [string length $socketdata($sock,head)]
+        set socketdata($sock,body) {}
     }
 
-    # check if short packet as will need to go round the loop again
-    set curlen [string length $socketdata($sock,head)]
+    # cheack we have all the head
     if {$curlen < 2} {
         return
     }
+    #########################################################################
 
     # By now have enough info to start defining remainder of the packet
     binary scan $socketdata($sock,head) cc addr func
 
     # calcalate the remaining length
-    set remlen [expr ($rtulen($func) + 2) - $curlen]
+    set curlen [string length $socketdata($sock,body)]
+
+    # body length is defined in the RTULEN array
+    if { [llength $rtulen($func)] == 1 } {
+        set remlen [expr $rtulen($func) - $curlen]
+    } else {
+        # for complex data extracting the actual length requires an index
+        # into the data
+        set remlen [expr $rtulen($func) - $curlen]
+    }
+
     #sanity check, no currently handled packet can be less than the header
     if {$remlen <= 0} {
-        puts "curlen :$curlen, pktlen:$pktlen"
         dropSocket $sock
         return
     }
@@ -467,16 +486,22 @@ proc tcpRTUEventRead {sock} {
     }
 
     set socketdata($sock,body) $socketdata($sock,body)$data
+    if { [string length $socketdata($sock,body)] < $remlen } {
+        puts "not enough [string length $socketdata($sock,body)]:$remlen"
+        return
+    }
+
     set datalen [string length $socketdata($sock,head)$socketdata($sock,body)]
 
     if { $datalen == [expr $rtulen($func) + 2]} {
-        puts "Processing $functext($func)"
-        binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
-        puts "Recv :$var"
+        # debug
+        # binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
+        # puts "$functext($func),Recv :$var"
+        # puts "$functext($func) : $holdingreg(0)"
 
         set body $socketdata($sock,body)
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
-            set data [binary format cc $addr $func]
+            set data [binary format c $addr]
             set mycrc [crc::crc16 -format %04X -seed 0xFFFF $data[lindex $valuelist 1]]
 
             # I could do the following in 1 line but I want to make
@@ -494,12 +519,20 @@ proc tcpRTUEventRead {sock} {
             # debug out
             # binary scan $data[lindex $valuelist 1]$mycrc H* var
             # puts "mycrc $mycrc"
-            binary scan $txbuffer H* var
-            puts "Sent :$var"
+            # binary scan $txbuffer H* var
+            # puts "Sent :$var"
         }
+        ##################################################################
+        # this in a special for an application where holding reg 0 is used
+        # as a heartbeat to determine health
+        incr holdingreg(0)
+        if { $holdingreg(0) > 0xFFFF } {
+            set holdingreg(0) 0
+        }
+        ##################################################################
         clearSocketData $sock
     } elseif { $datalen > [expr $rtulen($func) + 2]} {
-        puts "length error"
+        puts "length error $datalen:$curlen"
         dropSocket $sock
         return
     }
@@ -516,17 +549,33 @@ proc tcpCheck {channel} {
 }
 
 # basic server socket connect thing
-proc connect {channel clientaddr clientport} {
+proc rtuConnect {channel clientaddr clientport} {
+    global holdingreg
     global socketdata
-    puts "Connecting from $clientaddr $clientport"
+    set str "[clock format [clock seconds] -format {%H:%M:%S}] - Connecting from $clientaddr $clientport, $channel"
+    puts $str
+    # exec logger -p "local3.info" -t modbustcl $str
     fconfigure $channel -translation binary
     fconfigure $channel -blocking 0
-#    fileevent $channel readable [list tcpEventRead $channel]
     fileevent $channel readable [list tcpRTUEventRead $channel]
     clearSocketData $channel
 }
 
+# basic server socket connect thing
+proc modtcpConnect {channel clientaddr clientport} {
+    global holdingreg
+    global socketdata
+    set str "[clock format [clock seconds] -format {%H:%M:%S}] - Connecting from $clientaddr $clientport, $channel"
+    puts $str
+    # exec logger -p "local3.info" -t modbustcl $str
+    fconfigure $channel -translation binary
+    fconfigure $channel -blocking 0
+    fileevent $channel readable [list tcpEventRead $channel]
+    clearSocketData $channel
+}
+
 proc showHelp {} {
+    global funcjump
     puts "Help stuff"
     puts "usage bintest.tcl <register size> <port>"
     puts "The default register size is 512"
@@ -534,6 +583,7 @@ proc showHelp {} {
     puts "No help really as this is just a simple holding reg TCP modbus implementation"
     puts "--------------------------------------------------------------------------"
     puts "Supported codes are 3,4,6,16 and 22"
+    parray funcjump
     puts "3 - Read holding reagister"
     puts "4 - Read input reagister"
     puts "6 - Write register"
@@ -543,6 +593,7 @@ proc showHelp {} {
 }
 
 showHelp
+
 
 set depth 512
 if {$::argc > 0 } {
@@ -556,16 +607,37 @@ if {$::argc > 1 } {
 
 puts "Creating $depth holding registers"
 for {set i 0} {$i < $depth} {incr i} {
-    set holdingreg($i) 0
-    set inputreg($i) 0
+    set holdingreg($i) 257
+    # [binary format H* "0101"]
+    set inputreg($i) [binary format H* "0101"]
     set coil($i) 0
 }
+
+# foreach name [array names holdingreg] {
+#    binary scan $holdingreg($name) H* var
+#    puts "holdingreg($name) = $var"
+# }
+
+# parray holdingreg
+
+# initialise heartbeat counter
+set holdingreg(0) 0
 
 set filename /var/log/testfifo
 set host localhost
 
 puts "Starting server socket"
-socket -server connect $port
+socket -server rtuConnect $port
+puts "Starting server socket"
+socket -server modtcpConnect 502
+
+proc showStats {} {
+    global holdingreg
+    puts "[clock format [clock seconds] -format {%H:%M:%S}] - counter : $holdingreg(0)"
+    after 10000 showStats
+}
+
+showStats
 
 puts "Waiting forever"
 vwait forever
