@@ -514,7 +514,7 @@ proc tcpRTUEventRead {sock} {
         # debug
         # binary scan $socketdata($sock,head)$socketdata($sock,body) H* var
         # puts "$functext($func),Recv :$var"
-        # puts "$functext($func) : $holdingreg(0)"
+        puts "$functext($func) : $holdingreg(0)"
 
         set body $socketdata($sock,body)
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
