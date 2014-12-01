@@ -287,14 +287,14 @@ proc dropSocket {sock} {
 #
 # Appears to work ok
 ###########################################################################
-proc tcpEventRead {sock} {
+proc tcpEventRead {channel} {
     global endpointData
     global functext
     global funcjump
 
-    set myerror [fconfigure $sock -error]
+    set myerror [fconfigure $channel -error]
     if {$myerror != ""} {
-        dropSocket $sock
+        dropSocket $channel
         return
     }
 
@@ -303,10 +303,10 @@ proc tcpEventRead {sock} {
     # has probably died and this end needs to be cleaned up.
     #
     # This should probably be a config or command line option.
-    if {[info exists endpointData($sock,timer)]} {
-        catch {after cancel $endpointData($sock,timer)}
+    if {[info exists endpointData($channel,timer)]} {
+        catch {after cancel $endpointData($channel,timer)}
     }
-    set endpointData($sock,timer) [after 15000 [list dropSocket $sock]]
+    set endpointData($channel,timer) [after 15000 [list dropSocket $channel]]
 
     # Get the first 8 bytes, there is no pint getting anything less for this app
     # The MODTCP MBAP has a bunch of stuff that is never used here as this is not
@@ -314,70 +314,70 @@ proc tcpEventRead {sock} {
     #
     # The text representation of the data is used for length as I currently can
     # not assure that
-    set curlen [string length $endpointData($sock,head)]
+    set curlen [string length $endpointData($channel,head)]
     if {$curlen < 8} {
         set len [expr 8 - $curlen]
-        set head [read $sock $len]
+        set head [read $channel $len]
         if {$head == {}}  {
-            dropSocket $sock
+            dropSocket $channel
             return
         }
         # Append data to struct
-        set endpointData($sock,head) $endpointData($sock,head)$head
-        # binary scan $endpointData($sock,head) H* var
-        # set endpointData($sock,txt) $var
+        set endpointData($channel,head) $endpointData($channel,head)$head
+        # binary scan $endpointData($channel,head) H* var
+        # set endpointData($channel,txt) $var
         # puts "Read :$var"
     }
 
     # check if short packet as will need to go round the loop again
-    set curlen [string length $endpointData($sock,head)]
+    set curlen [string length $endpointData($channel,head)]
     if {$curlen < 8} {
         return
     }
 
     # By now have enough info to start defining remainder of the packet
-    binary scan $endpointData($sock,head) S2Scc mbap pktlen uid func
+    binary scan $endpointData($channel,head) S2Scc mbap pktlen uid func
 
     # calcalate the remaining length
     set remlen [expr ($pktlen + 6) - $curlen]
     #sanity check, no currently handled packet can be less than the header
     if {$remlen <= 0} {
         puts "curlen :$curlen, pktlen:$pktlen"
-        dropSocket $sock
+        dropSocket $channel
         return
     }
 
     # append to data
-    set data [read $sock $remlen]
+    set data [read $channel $remlen]
     if {$data == {}}  {
-        dropSocket $sock
+        dropSocket $channel
         return
     }
-    set endpointData($sock,body) $endpointData($sock,body)$data
-    set datalen [string length $endpointData($sock,head)$endpointData($sock,body)]
+    set endpointData($channel,body) $endpointData($channel,body)$data
+    set datalen [string length $endpointData($channel,head)$endpointData($channel,body)]
 
     if { $datalen == [expr ($pktlen) + 6]} {
-        binary scan $endpointData($sock,head)$endpointData($sock,body) H* var
+        binary scan $endpointData($channel,head)$endpointData($channel,body) H* var
         puts "$functext($func),Recv :$var"
 
-        set body $endpointData($sock,body)
+        set body $endpointData($channel,body)
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
             set len [expr [lindex $valuelist 0] + 1]
             set data [binary format S2Sc $mbap $len $uid]
 
             # marshal up the data
             set txbuffer $data[lindex $valuelist 1]
-            # puts -nonewline $sock $data[lindex $valuelist 1]
-            puts -nonewline $sock $txbuffer
-            flush $sock
+            # puts -nonewline $channel $data[lindex $valuelist 1]
+            puts -nonewline $channel $txbuffer
+            flush $channel
 
             # binary scan $txbuffer H* var
             # puts "Sent :$var"
         }
-        clearEndpointData $sock
+        clearEndpointData $channel
     } elseif { $datalen > [expr ($pktlen) + 6]} {
         puts "length error"
-        dropSocket $sock
+        dropSocket $channel
         return
     }
 }
@@ -448,7 +448,7 @@ proc tcpRTUEventRead {sock} {
     }
 }
 
-proc RTUEventRead {sock} {
+proc RTUEventRead {channel} {
     global endpointData
     global holdingreg
     global rtulen
@@ -459,21 +459,22 @@ proc RTUEventRead {sock} {
     # The RTU over TCP has a bunch of stuff that is never used here as this is not
     # a multi server setup.
     #
-    set curlen [string length $endpointData($sock,head)]
+    set curlen [string length $endpointData($channel,head)]
     if {$curlen < 2} {
         set len [expr 2 - $curlen]
-        set head [read $sock $len]
+
+        set head [read $channel $len]
         if {$head == {}}  {
             return -1
         }
 
         # Append data to struct
-        set endpointData($sock,head) $endpointData($sock,head)$head
+        set endpointData($channel,head) $endpointData($channel,head)$head
 
         puts -nonewline "Read :"
-        binaryPrint $endpointData($sock,head)
-        set curlen [string length $endpointData($sock,head)]
-        set endpointData($sock,body) {}
+        binaryPrint $endpointData($channel,head)
+        set curlen [string length $endpointData($channel,head)]
+        set endpointData($channel,body) {}
     }
 
     # cheack we have all the head
@@ -483,14 +484,14 @@ proc RTUEventRead {sock} {
     #########################################################################
 
     # By now have enough info to start defining remainder of the packet
-    binary scan $endpointData($sock,head) cc addr func
+    binary scan $endpointData($channel,head) cc addr func
 
     # calcalate the remaining length
-    set curlen [string length $endpointData($sock,body)]
+    set curlen [string length $endpointData($channel,body)]
 
     if {![info exists rtulen($func)]} {
         puts -nonewline ">>>>>>>>>>>>>> Invalid func:$func"
-        binaryPrint $endpointData($sock,head)
+        binaryPrint $endpointData($channel,head)
         read $fh
         return 0
     }
@@ -509,29 +510,29 @@ proc RTUEventRead {sock} {
     }
 
     # append to data
-    set data [read $sock $remlen]
+    set data [read $channel $remlen]
     if {$data == {}}  {
         return -1
     }
 
-    set endpointData($sock,body) $endpointData($sock,body)$data
-    if { [string length $endpointData($sock,body)] < $remlen } {
-        puts "not enough [string length $endpointData($sock,body)]:$remlen"
+    set endpointData($channel,body) $endpointData($channel,body)$data
+    if { [string length $endpointData($channel,body)] < $remlen } {
+        puts "not enough [string length $endpointData($channel,body)]:$remlen"
         return 0
     }
 
-    set datalen [string length $endpointData($sock,head)$endpointData($sock,body)]
+    set datalen [string length $endpointData($channel,head)$endpointData($channel,body)]
 
     if { $datalen == [expr $rtulen($func) + 2]} {
         # debug
-        # binary scan $endpointData($sock,head)$endpointData($sock,body) H* var
+        # binary scan $endpointData($channel,head)$endpointData($channel,body) H* var
         if { $func != 22 } {
             puts -nonewline "$functext($func),Recv :"
-            binaryPrint $endpointData($sock,head)$endpointData($sock,body)
+            binaryPrint $endpointData($channel,head)$endpointData($channel,body)
             # puts "$functext($func) : $holdingreg(0)"
         }
 
-        set body $endpointData($sock,body)
+        set body $endpointData($channel,body)
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
             set data [binary format c $addr]
             set mycrc [crc::crc16 -format %04X -seed 0xFFFF $data[lindex $valuelist 1]]
@@ -545,8 +546,8 @@ proc RTUEventRead {sock} {
 
             # marshal up all the data
             set txbuffer $data[lindex $valuelist 1][binary format H* $mycrc]
-            puts -nonewline $sock $txbuffer
-            flush $sock
+            puts -nonewline $channel $txbuffer
+            flush $channel
 
             # debug out
             puts -nonewline "Sent :"
@@ -561,7 +562,7 @@ proc RTUEventRead {sock} {
             set holdingreg(0) 0
         }
         ##################################################################
-        clearEndpointData $sock
+        clearEndpointData $channel
     } elseif { $datalen > [expr $rtulen($func) + 2]} {
         puts "length error $datalen:$curlen"
         return -1
