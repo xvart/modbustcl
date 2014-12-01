@@ -95,8 +95,8 @@ proc coil_1 {func data} {
     global coilreg
 
     binary scan $data SS start len
-    for {set i 0 } {i < $len } {incr i} {
-        lappend buffer $coilreg([expr $i + $start)
+    for {set i 0 } {$i < $len } {incr i} {
+        lappend buffer $coilreg([expr $i + $start])
     }
     set blen [expr [llength $buffer] ]
     return [list [expr $blen + 2] [binary format ccb* $func $blen $buffer]]
@@ -656,7 +656,7 @@ puts "Starting server socket"
 #socket -server modtcpConnect 502
 
 puts "Starting serial port"
-if {4tcl_platform(os) == Linux } {
+if {$tcl_platform(os) == Linux } {
     set fh [open {/dev/ttyUSB0} RDWR]
 } else {
     set fh [open {//./COM4} RDWR]
