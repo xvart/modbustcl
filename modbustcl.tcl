@@ -394,7 +394,7 @@ proc serialEventRTU {channel} {
         return
     }
 
-    puts "Serial data on channel $channel"
+    #puts "Serial data on channel $channel"
     set ret [RTUEventRead $channel]
     switch $ret {
         -1 {
@@ -483,12 +483,10 @@ proc RTUEventRead {sock} {
         if {$head == {}}  {
             return -1
         }
-
         # Append data to struct
         set endpointData($sock,head) $endpointData($sock,head)$head
-
-        puts -nonewline "Read :"
-        binaryPrint $endpointData($sock,head)
+        # puts -nonewline "Read :"
+        # binaryPrint $endpointData($sock,head)
         set curlen [string length $endpointData($sock,head)]
         set endpointData($sock,body) {}
     }
@@ -519,7 +517,7 @@ proc RTUEventRead {sock} {
 		# when we get here we already have 2 bytes from the packet
 		# curlen is the body after these two bytes
 		if { $func == 16 } {
-			puts "Processing $functext($func)"
+			# puts "Processing $functext($func)"
 			# Head 0010
 			# Body 0001,0008,10,000a,000a,000a,000a,000a,000a,000a,000a
 			set hl [lindex $rtulen($func) 0]
@@ -544,7 +542,6 @@ proc RTUEventRead {sock} {
 	# data is read in bytes so use bc as it represents the 
 	# total tail bytes to be read
 	set remlen [expr ($endpointData($sock,maxlen) -2) - $curlen]
-	# set remlen [expr $hl + $bc - $curlen]
     #sanity check, no currently handled packet can be less than the header
     if {$remlen <= 0} {
 		puts "Bad remlen $remlen"
@@ -555,21 +552,20 @@ proc RTUEventRead {sock} {
     # append to data
     set data [read $sock $remlen]
     if {$data == {}}  {
-		puts "Empty read??"
-        # return -1
-    }
-	
-	# Archive data
-    set endpointData($sock,body) $endpointData($sock,body)$data
-    
-    # See if we need to go back for more
-    if { [string length $endpointData($sock,body)] < $remlen } {
-        puts "not enough [string length $endpointData($sock,body)]:$remlen"
+		# puts "Empty read??"
         return 0
-    }
+    } else {
+		# Archive data
+		set endpointData($sock,body) $endpointData($sock,body)$data
+		
+		# See if we need to go back for more
+		if { [string length $endpointData($sock,body)] < $remlen } {
+			# puts "not enough [string length $endpointData($sock,body)]:$remlen"
+			return 0
+		}
+	}
 	
     set datalen [string length $endpointData($sock,head)$endpointData($sock,body)]
-
     if { $datalen == $endpointData($sock,maxlen)} {
         # debug
         # binary scan $endpointData($sock,head)$endpointData($sock,body) H* var
@@ -596,8 +592,8 @@ proc RTUEventRead {sock} {
             flush $sock
 
             # debug out
-            puts -nonewline "Sent :"
-            binaryPrint $txbuffer
+            # puts -nonewline "Sent :"
+            # binaryPrint $txbuffer
 
         }
         ##################################################################
