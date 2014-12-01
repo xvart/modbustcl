@@ -567,12 +567,10 @@ proc RTUEventRead {sock} {
 	
     set datalen [string length $endpointData($sock,head)$endpointData($sock,body)]
     if { $datalen == $endpointData($sock,maxlen)} {
+		
         # debug
-        # binary scan $endpointData($sock,head)$endpointData($sock,body) H* var
-        if { $func != 22 } {
-            puts -nonewline "$functext($func),Recv :"
-            binaryPrint $endpointData($sock,head)$endpointData($sock,body)
-        }
+		puts -nonewline "$functext($func),Recv :"
+		binaryPrint $endpointData($sock,head)$endpointData($sock,body)
 
         set body $endpointData($sock,body)
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
