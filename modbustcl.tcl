@@ -95,8 +95,8 @@ proc coil_1 {func data} {
     global coilreg
 
     binary scan $data SS start len
-    for {set i 0 } {i < $len } {incr i} {
-        lappend buffer $coilreg([expr $i + $start)
+    for {set i 0 } {$i < $len } {incr i} {
+        lappend buffer $coilreg([expr $i + $start])
     }
     set blen [expr [llength $buffer] ]
     return [list [expr $blen + 2] [binary format ccb* $func $blen $buffer]]
@@ -386,7 +386,7 @@ proc serialEventRTU {channel} {
 
     global endpointData
     puts "Serial data on channel $channel"
-    puts $channel "Serial data on channel $channel"
+    # puts $channel "Serial data on channel $channel"
 
     if {[fblocked $channel]} {
         return
@@ -487,11 +487,14 @@ proc RTUEventRead {sock} {
 
     # calcalate the remaining length
     set curlen [string length $endpointData($sock,body)]
+    if { $func == 16 } {
+		puts "Error next up"
+	}
 
     if {![info exists rtulen($func)]} {
         puts -nonewline ">>>>>>>>>>>>>> Invalid func:$func"
         binaryPrint $endpointData($sock,head)
-        read $fh
+        read $sock
         return 0
     }
     # body length is defined in the RTULEN array
@@ -528,7 +531,6 @@ proc RTUEventRead {sock} {
         if { $func != 22 } {
             puts -nonewline "$functext($func),Recv :"
             binaryPrint $endpointData($sock,head)$endpointData($sock,body)
-            # puts "$functext($func) : $holdingreg(0)"
         }
 
         set body $endpointData($sock,body)
@@ -543,7 +545,7 @@ proc RTUEventRead {sock} {
             # re-arrange mycrc
             set mycrc $low$high
 
-            # marshal up all the data
+            # marshal up all the data and send
             set txbuffer $data[lindex $valuelist 1][binary format H* $mycrc]
             puts -nonewline $sock $txbuffer
             flush $sock
@@ -586,7 +588,6 @@ proc rtuConnect {channel clientaddr clientport} {
     global endpointData
     set str "[clock format [clock seconds] -format {%H:%M:%S}] - Connecting from $clientaddr $clientport, $channel"
     puts $str
-    # exec logger -p "local3.info" -t modbustcl $str
     fconfigure $channel -translation binary
     fconfigure $channel -blocking 0
     fileevent $channel readable [list tcpRTUEventRead $channel]
@@ -640,8 +641,8 @@ puts "Creating $depth holding registers"
 for {set i 0} {$i < $depth} {incr i} {
     set holdingreg($i) 257
     # [binary format H* "0101"]
-    set inputreg($i) [binary format H* "0101"]
-    set coil($i) 0
+    set inputreg($i) 257
+    set coilreg($i) 0
 }
 
 # initialise heartbeat counter
@@ -651,13 +652,16 @@ set filename /var/log/testfifo
 set host localhost
 
 puts "Starting server socket"
-#socket -server rtuConnect $port
+socket -server rtuConnect $port
 puts "Starting server socket"
 #socket -server modtcpConnect 502
 
 puts "Starting serial port"
-if {4tcl_platform(os) == Linux } {
-    set fh [open {/dev/ttyUSB0} RDWR]
+if {$tcl_platform(os) == {Linux} } {
+    set device "/dev/ttyUSB0"
+    # set fh [open {/dev/ttyUSB0} RDWR]
+	set fh [open $device {RDWR NONBLOCK}]
+	exec stty -F $device clocal
 } else {
     set fh [open {//./COM4} RDWR]
 }
@@ -665,16 +669,15 @@ if {4tcl_platform(os) == Linux } {
 fconfigure $fh -blocking 0 -translation binary -buffering none -eofchar {}
 fileevent $fh readable [list serialEventRTU $fh]
 clearSerialEndpointData $fh
-puts $fh "This is now open"
-flush $fh
 puts "Serial port connected $fh"
 
-proc showStats {} {
+proc showStats {fh} {
     global holdingreg
     puts "[clock format [clock seconds] -format {%H:%M:%S}] - counter : $holdingreg(0)"
-    after 10000 showStats
+    puts "Serial handle $fh"
+    after 10000 [list showStats $fh]
 }
-showStats
+showStats $fh
 
 puts ">>>>>>>>>>>>>>>>>>>> Waiting forever <<<<<<<<<<<<<<<<<"
 vwait forever
