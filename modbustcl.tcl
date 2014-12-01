@@ -64,6 +64,7 @@ array set funcjump [list \
 # length gets received as such some magic needs to be done up front
 # to enable the reuse of the same procedures that are used by the TCP
 # code
+# rtulen is the body length as the header part can be either RTU or TCP
 set rtulen(1) 6
 # set rtulen(2) 6
 set rtulen(3) 6
@@ -81,7 +82,7 @@ set rtulen(7) 0
 #
 # The array now needs to include a sub header length with a marker
 # to indicate which word is the length
-set rtulen(16) 6
+set rtulen(16) [list 5 5]
 set rtulen(22) 8
 
 proc binaryPrint {data} {
@@ -248,6 +249,7 @@ proc clearEndpointData {channel} {
     # and after the socket is created
     set endpointData($channel,timer) [after 15000 [list dropSocket $channel]]
 }
+
 proc clearSerialEndpointData {channel} {
     global endpointData
 
@@ -374,26 +376,42 @@ proc tcpEventRead {sock} {
             # binary scan $txbuffer H* var
             # puts "Sent :$var"
         }
-        clearEndpointData $sock
+        
+        return 1
     } elseif { $datalen > [expr ($pktlen) + 6]} {
         puts "length error"
         dropSocket $sock
-        return
+        return -1
     }
 }
 
 proc serialEventRTU {channel} {
 
     global endpointData
-    puts "Serial data on channel $channel"
-    # puts $channel "Serial data on channel $channel"
 
     if {[fblocked $channel]} {
+		puts "Blocked $channel"
         return
     }
 
-    RTUEventRead $channel
+    puts "Serial data on channel $channel"
+    set ret [RTUEventRead $channel]
+    switch $ret {
+        -1 {
+            # dropSocket $channel
+            puts "Warning will robinson"
+            exit 0
+        }
+        0 {
 
+        }
+        1 {
+            clearSerialEndpointData $channel
+        }
+        default {
+			puts "Alien attack"
+		}
+    }
     return
 }
 
@@ -442,9 +460,8 @@ proc tcpRTUEventRead {sock} {
         1 {
             clearEndpointData $sock
         }
-    }
-    if { $ret < 0 } {
-        dropSocket $sock
+        default {
+		}
     }
 }
 
@@ -484,48 +501,76 @@ proc RTUEventRead {sock} {
 
     # By now have enough info to start defining remainder of the packet
     binary scan $endpointData($sock,head) cc addr func
-
-    # calcalate the remaining length
-    set curlen [string length $endpointData($sock,body)]
-    if { $func == 16 } {
-		puts "Error next up"
-	}
-
+	# sanity check
     if {![info exists rtulen($func)]} {
         puts -nonewline ">>>>>>>>>>>>>> Invalid func:$func"
         binaryPrint $endpointData($sock,head)
         read $sock
         return 0
     }
+    
+    # calcalate the remaining length
+    set curlen [string length $endpointData($sock,body)]
     # body length is defined in the RTULEN array
     if { [llength $rtulen($func)] == 1 } {
         set remlen [expr $rtulen($func) - $curlen]
+        set endpointData($sock,maxlen) [expr $rtulen($func)+2]
     } else {
-        # for complex data extracting the actual length requires an index
-        # into the data
-        set remlen [expr $rtulen($func) - $curlen]
+		# when we get here we already have 2 bytes from the packet
+		# curlen is the body after these two bytes
+		if { $func == 16 } {
+			puts "Processing $functext($func)"
+			# Head 0010
+			# Body 0001,0008,10,000a,000a,000a,000a,000a,000a,000a,000a
+			set hl [lindex $rtulen($func) 0]
+			set bl [lindex $rtulen($func) 1]
+			if { $hl > $curlen } {
+				set remlen [expr $hl - $curlen]
+				set data [read $sock $remlen]
+				if {$data != {}}  {
+					set endpointData($sock,body) $endpointData($sock,body)$data
+				}
+				return 0
+			} else {
+				# (hl - 2) is less than or equal to curlen in this
+				# instance 5 extract length data from body
+				binary scan $endpointData($sock,body) SSc start regcount bc
+				# remember to add 2 for the crc
+				set endpointData($sock,maxlen) [expr $hl + 2 + $bc + 2]
+			}
+		}
     }
 
+	# data is read in bytes so use bc as it represents the 
+	# total tail bytes to be read
+	set remlen [expr ($endpointData($sock,maxlen) -2) - $curlen]
+	# set remlen [expr $hl + $bc - $curlen]
     #sanity check, no currently handled packet can be less than the header
     if {$remlen <= 0} {
+		puts "Bad remlen $remlen"
+		binaryPrint $endpointData($sock,body)
         return -1
     }
 
     # append to data
     set data [read $sock $remlen]
     if {$data == {}}  {
-        return -1
+		puts "Empty read??"
+        # return -1
     }
-
+	
+	# Archive data
     set endpointData($sock,body) $endpointData($sock,body)$data
+    
+    # See if we need to go back for more
     if { [string length $endpointData($sock,body)] < $remlen } {
         puts "not enough [string length $endpointData($sock,body)]:$remlen"
         return 0
     }
-
+	
     set datalen [string length $endpointData($sock,head)$endpointData($sock,body)]
 
-    if { $datalen == [expr $rtulen($func) + 2]} {
+    if { $datalen == $endpointData($sock,maxlen)} {
         # debug
         # binary scan $endpointData($sock,head)$endpointData($sock,body) H* var
         if { $func != 22 } {
@@ -562,14 +607,16 @@ proc RTUEventRead {sock} {
         if { $holdingreg(0) > 0xFFFF } {
             set holdingreg(0) 0
         }
+        
         ##################################################################
-        clearEndpointData $sock
-    } elseif { $datalen > [expr $rtulen($func) + 2]} {
+        return 1
+        
+    } elseif { $datalen > [expr $endpointData($sock,maxlen) + 2]} {
         puts "length error $datalen:$curlen"
         return -1
     }
 
-    return 1
+    return 0
 }
 
 proc tcpCheck {channel} {
@@ -674,7 +721,7 @@ puts "Serial port connected $fh"
 proc showStats {fh} {
     global holdingreg
     puts "[clock format [clock seconds] -format {%H:%M:%S}] - counter : $holdingreg(0)"
-    puts "Serial handle $fh"
+    # puts "Serial handle $fh"
     after 10000 [list showStats $fh]
 }
 showStats $fh
