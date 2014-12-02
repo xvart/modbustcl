@@ -1,10 +1,18 @@
 #!/usr/bin/env tclsh
 
+puts "modbustcl version 0.5 working 2 DEC 2014"
+
 # Simple event driven modbus TCP server
 # The server currently only handles holding and input register
 # types but the basic proincipal can be applied to coil etc.
 
 package require crc16
+package require logger
+
+set log [logger::init main]
+puts "Known logger levels [logger::levels]"
+puts "Known logger services [logger::services]"
+${::log}::setlevel info
 
 # Need to rewrite the GP (generating polynomial) to match modbus spec
 # Lucky for us the internal lookup table is generated as needed
@@ -87,7 +95,8 @@ set rtulen(22) 8
 
 proc binaryPrint {data} {
     binary scan $data H* var
-    puts $var
+    # puts $var
+    return $var
 }
 
 # coil data
@@ -187,43 +196,6 @@ proc holding22 {func data} {
     return [list 7 [binary format cSSS $func $addr $andmask $ormask]]
 }
 
-###########################################################################
-proc holding {func data} {
-    global holdingreg
-
-    if {$func == 3 } {
-        binary scan $data SS start len
-        # puts "Read holding registers"
-        set end [expr $start + $len]
-        for {set i $start} {$i < $end} {incr i} {
-            lappend buffer $holdingreg($i)
-        }
-        set blen [expr [llength $buffer] * 2]
-        return [list [expr $blen + 2] [binary format ccS* $func $blen $buffer]]
-    } elseif {$func == 6} {
-        binary scan $data SS addr value
-        # puts "Write holding register $addr - $value"
-        set holdingreg($addr) $value
-        lappend buffer $holdingreg($addr)
-        return [list 5 [binary format cSS $func $addr $holdingreg($addr)]]
-    } elseif {$func == 16} {
-        binary scan $data SScS* start len bc values
-        # puts "Write multiple holding registers "
-        for { set i 0 } {$i < $len} {incr i} {
-            set pos [expr $start + $i]
-            set holdingreg($pos) [lindex $values $i]
-        }
-        return [list 5 [binary format cSS $func $start $len]]
-    } elseif {$func == 22} {
-        # puts "Mask Write register"
-        binary scan $data SSS addr andmask ormask
-        binary scan $holdingreg($addr) H* var
-        set $holdingreg($addr) [expr ($holdingreg($addr) & $andmask) | ($ormask & ~$andmask)]
-        binary scan $holdingreg($addr) H* var2
-        return [list 7 [binary format cSSS $func $addr $andmask $ormask]]
-    }
-    return {}
-}
 
 # This is here for the sake of brevity in the main block
 proc clearEndpointData {channel} {
@@ -370,11 +342,12 @@ proc tcpEventRead {sock} {
             # marshal up the data
             set txbuffer $data[lindex $valuelist 1]
             # puts -nonewline $sock $data[lindex $valuelist 1]
+            binary scan $txbuffer H* var
+            puts "Sent :$var"
+            
             puts -nonewline $sock $txbuffer
             flush $sock
 
-            # binary scan $txbuffer H* var
-            # puts "Sent :$var"
         }
         
         return 1
@@ -396,21 +369,15 @@ proc serialEventRTU {channel} {
 
     #puts "Serial data on channel $channel"
     set ret [RTUEventRead $channel]
-    switch $ret {
-        -1 {
-            # dropSocket $channel
-            puts "Warning will robinson"
-            exit 0
-        }
-        0 {
-
-        }
-        1 {
-            clearSerialEndpointData $channel
-        }
-        default {
-			puts "Alien attack"
-		}
+    if { $ret == -1 } {
+        puts "Warning will robinson"
+        clearSerialEndpointData $channel
+    } elseif { $ret == 0 } {
+        
+    } elseif { $ret == 1 } {
+        clearSerialEndpointData $channel
+    } else {
+        puts "Alien attack"
     }
     return
 }
@@ -450,22 +417,16 @@ proc tcpRTUEventRead {sock} {
     }
     set endpointData($sock,timer) [after 15000 [list dropSocket $sock]]
     set ret [RTUEventRead $sock]
-    switch $ret {
-        -1 {
-            dropSocket $sock
-        }
-        0 {
-
-        }
-        1 {
-            clearEndpointData $sock
-        }
-        default {
-		}
+    if { $ret == -1 } {
+        dropSocket $sock
+    } elseif { $ret == 0} {
+    } elseif { $ret == 1} {
+        clearEndpointData $sock
     }
 }
 
 proc RTUEventRead {sock} {
+	variable log
     global endpointData
     global holdingreg
     global rtulen
@@ -501,10 +462,9 @@ proc RTUEventRead {sock} {
     binary scan $endpointData($sock,head) cc addr func
 	# sanity check
     if {![info exists rtulen($func)]} {
-        puts -nonewline ">>>>>>>>>>>>>> Invalid func:$func"
-        binaryPrint $endpointData($sock,head)
+        ${log}::error ">>>>>>>>>>>>>> Invalid func:$func [binaryPrint $endpointData($sock,head)]"        
         read $sock
-        return 0
+        return -1
     }
     
     # calcalate the remaining length
@@ -544,34 +504,31 @@ proc RTUEventRead {sock} {
 	set remlen [expr ($endpointData($sock,maxlen) -2) - $curlen]
     #sanity check, no currently handled packet can be less than the header
     if {$remlen <= 0} {
-		puts "Bad remlen $remlen"
-		binaryPrint $endpointData($sock,body)
+		${log}::error "Bad remlen $remlen"
+		${log}::error [binaryPrint $endpointData($sock,body)]
         return -1
     }
 
     # append to data
     set data [read $sock $remlen]
     if {$data == {}}  {
-		# puts "Empty read??"
-        return 0
+		${log}::debug "Empty read??"
+		return 0
     } else {
 		# Archive data
 		set endpointData($sock,body) $endpointData($sock,body)$data
 		
 		# See if we need to go back for more
 		if { [string length $endpointData($sock,body)] < $remlen } {
-			# puts "not enough [string length $endpointData($sock,body)]:$remlen"
+			${log}::debug "not enough [string length $endpointData($sock,body)]:$remlen"
 			return 0
 		}
 	}
 	
     set datalen [string length $endpointData($sock,head)$endpointData($sock,body)]
     if { $datalen == $endpointData($sock,maxlen)} {
-		
         # debug
-		puts -nonewline "$functext($func),Recv :"
-		binaryPrint $endpointData($sock,head)$endpointData($sock,body)
-
+		${log}::info "$functext($func),Recv : [binaryPrint $endpointData($sock,head)$endpointData($sock,body)]"
         set body $endpointData($sock,body)
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
             set data [binary format c $addr]
@@ -590,8 +547,7 @@ proc RTUEventRead {sock} {
             flush $sock
 
             # debug out
-            # puts -nonewline "Sent :"
-            # binaryPrint $txbuffer
+            ${log}::info "Sent :[binaryPrint $txbuffer]"
 
         }
         ##################################################################
@@ -614,8 +570,9 @@ proc RTUEventRead {sock} {
 }
 
 proc tcpCheck {channel} {
+	variable log
     set myerror [fconfigure $channel -error]
-    puts "tcpCheck $channel $myerror"
+    ${log}::debug "tcpCheck $channel $myerror"
     if { $myerror != ""} {
         puts $myerror
         dropSocket $channel
@@ -625,10 +582,10 @@ proc tcpCheck {channel} {
 
 # basic server socket connect thing
 proc rtuConnect {channel clientaddr clientport} {
+	variable log
     global holdingreg
     global endpointData
-    set str "[clock format [clock seconds] -format {%H:%M:%S}] - Connecting from $clientaddr $clientport, $channel"
-    puts $str
+    ${log}::debug "[clock format [clock seconds] -format {%H:%M:%S}] - Connecting from $clientaddr $clientport, $channel"
     fconfigure $channel -translation binary
     fconfigure $channel -blocking 0
     fileevent $channel readable [list tcpRTUEventRead $channel]
@@ -668,7 +625,7 @@ proc showHelp {} {
 
 showHelp
 
-set depth 512
+set depth 1024
 if {$::argc > 0 } {
     set depth [lindex $::argv 0]
 }
@@ -680,9 +637,8 @@ if {$::argc > 1 } {
 
 puts "Creating $depth holding registers"
 for {set i 0} {$i < $depth} {incr i} {
-    set holdingreg($i) 257
-    # [binary format H* "0101"]
-    set inputreg($i) 257
+    set holdingreg($i) 771
+    set inputreg($i) 771
     set coilreg($i) 0
 }
 
@@ -707,6 +663,7 @@ if {$tcl_platform(os) == {Linux} } {
     set fh [open {//./COM4} RDWR]
 }
 
+fconfigure $fh -mode 38400,n,8,1
 fconfigure $fh -blocking 0 -translation binary -buffering none -eofchar {}
 fileevent $fh readable [list serialEventRTU $fh]
 clearSerialEndpointData $fh
