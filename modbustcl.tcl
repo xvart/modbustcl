@@ -1,4 +1,4 @@
-#!/usr/bin/env tclsh
+#!/bin/env tclsh
 
 puts "modbustcl version 0.7 working 2 DEC 2014"
 
@@ -152,6 +152,7 @@ proc holding3 {func data} {
 
 proc holding6 {func data} {
     global holdingreg
+    variable functext
 
     binary scan $data SS addr value
     set reg $holdingreg($addr)
@@ -161,7 +162,7 @@ proc holding6 {func data} {
     if {$reg != $holdingreg($addr)} {
         set reg [format "%04X" $reg]
         set new [format "%04X" $holdingreg($addr)]
-        puts "$reg > $new"
+        puts "$functext($func) $reg > $new"
     }
 
     return [list 5 [binary format cSS $func $addr $holdingreg($addr)]]
@@ -354,10 +355,11 @@ proc tcpEventRead {sock} {
     set datalen [string length $endpointData($sock,head)$endpointData($sock,body)]
 
     if { $datalen == $endpointData($sock,maxlen)} {
-        binary scan $endpointData($sock,head)$endpointData($sock,body) H* var
-        puts "$functext($func),Recv :$var"
-
+         ${log}::info "$functext($func),Recv :[binaryPrint $endpointData($sock,head)$endpointData($sock,body)]"
+         
+		# need this for funcjump
         set body $endpointData($sock,body)
+        # need the eval as args are mixed with call
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
             set len [expr [lindex $valuelist 0] + 1]
             set head [binary format S2Sc \
@@ -367,12 +369,19 @@ proc tcpEventRead {sock} {
 			]
             # marshal up the data
             set txbuffer $head[lindex $valuelist 1]
-            puts "Sent :[binaryPrint $txbuffer]"            
             puts -nonewline $sock $txbuffer
             flush $sock
+            
+            ${log}::info  "Sent :[binaryPrint $txbuffer]"            
 
         }
         clearEndpointData $sock
+        
+        ##################################################################
+        # this in a special for an application where holding reg 0 is used
+        # as a heartbeat to determine health
+        updateHeartbeat
+        
         return 1
     } elseif { $datalen > [expr ($pktlen) + 6]} {
         puts "length error $datalen:$curlen:[expr ($pktlen) + 6]"        
@@ -578,15 +587,13 @@ proc RTUEventRead {sock} {
 
             # debug out
             ${log}::info "Sent :[binaryPrint $txbuffer]"
+            return 1
 
         }
         ##################################################################
         # this in a special for an application where holding reg 0 is used
         # as a heartbeat to determine health
-        incr holdingreg(0)
-        if { $holdingreg(0) > 0xFFFF } {
-            set holdingreg(0) 0
-        }
+        updateHeartbeat
         
         ##################################################################
         return 1
@@ -692,7 +699,7 @@ if {$tcl_platform(os) == {Linux} } {
 }
 
 proc startSerial {device} {
-	if {$tcl_platform(os) == {Linux} } {
+	if {$::tcl_platform(os) == {Linux} } {
 		if { ![file exists $device] } {
 			after 10000 [list startSerial $device]
 		}
@@ -708,6 +715,18 @@ proc startSerial {device} {
 	clearSerialEndpointData $fh
 	puts "Serial port connected $fh"
 }
+startSerial $device
+
+proc updateHeartbeat {} {
+	global holdingreg
+	##################################################################
+	# this in a special for an application where holding reg 0 is used
+	# as a heartbeat to determine health
+	incr holdingreg(0)
+	if { $holdingreg(0) > 0xFFFF } {
+		set holdingreg(0) 0
+	}
+}	
 
 proc showStats {} {
 	variable log
