@@ -14,7 +14,7 @@ puts "Known logger levels [logger::levels]"
 puts "Known logger services [logger::services]"
 # log levels
 # debug info notice warn error critical alert emergency
-${::log}::setlevel info
+${::log}::setlevel warn
 
 # Need to rewrite the GP (generating polynomial) to match modbus spec
 # Lucky for us the internal lookup table is generated as needed
@@ -153,6 +153,7 @@ proc holding3 {func data} {
 proc holding6 {func data} {
     global holdingreg
     variable functext
+    variable log
 
     binary scan $data SS addr value
     set reg $holdingreg($addr)
@@ -162,7 +163,7 @@ proc holding6 {func data} {
     if {$reg != $holdingreg($addr)} {
         set reg [format "%04X" $reg]
         set new [format "%04X" $holdingreg($addr)]
-        puts "$functext($func) $reg > $new"
+        ${log}::info "$functext($func) $reg > $new"
     }
 
     return [list 5 [binary format cSS $func $addr $holdingreg($addr)]]
@@ -222,7 +223,7 @@ proc clearEndpointData {channel} {
 
     # The timer needs to be here as this is run after every packet
     # and after the socket is created
-    set endpointData($channel,timer) [after 15000 [list dropSocket $channel]]
+    set endpointData($channel,timer) [after 30000 [list dropSocket $channel]]
 }
 
 proc clearSerialEndpointData {channel} {
@@ -243,13 +244,13 @@ proc clearSerialEndpointData {channel} {
 proc dropSocket {sock} {
     global endpointData
     puts "Dropping socket $sock"
-    
+
     catch {close $sock}
     # cleanout any monitor timer
     if {[info exists endpointData($sock,timer)]} {
         catch {after cancel $endpointData($sock,timer)}
     }
-    
+
     catch {array unset endpointData "$sock,*"}
     catch {unset endpointData($sock)}
 }
@@ -286,7 +287,7 @@ proc tcpEventRead {sock} {
     if {[info exists endpointData($sock,timer)]} {
         catch {after cancel $endpointData($sock,timer)}
     }
-    set endpointData($sock,timer) [after 15000 [list dropSocket $sock]]
+    set endpointData($sock,timer) [after 30000 [list dropSocket $sock]]
 
     # Get the first 8 bytes, there is no pint getting anything less for this app
     # The MODTCP MBAP has a bunch of stuff that is never used here as this is not
@@ -300,13 +301,13 @@ proc tcpEventRead {sock} {
             return
         }
         # Append data to struct
-        set endpointData($sock,head) $endpointData($sock,head)$head        
+        set endpointData($sock,head) $endpointData($sock,head)$head
 		# check if still need to get more
 		set curlen [string length $endpointData($sock,head)]
 		if {$curlen < 8} {
 			return 0
 		}
-		
+
 		# 0001,0000,0006,00,06,0001,000a
 		# By now have enough info to start defining remainder of the packet
 		binary scan $endpointData($sock,head) S2Scc \
@@ -314,30 +315,30 @@ proc tcpEventRead {sock} {
 			endpointData($sock,pktlen) \
 			endpointData($sock,uid) \
 			endpointData($sock,func)
-			
-		# sanity check	
+
+		# sanity check
 		if {![info exists rtulen($endpointData($sock,func))]} {
-			${log}::error "Invalid func:$func [binaryPrint $endpointData($sock,head)]"        
+			${log}::error "Invalid func:$func [binaryPrint $endpointData($sock,head)]"
 			read $sock
 			clearEndpointData $sock
 		}
-			
+
 		set endpointData($sock,maxlen) [expr ($endpointData($sock,pktlen) + 6)]
 		set endpointData($sock,body) {}
     }
-    
+
     ####################################################################
     # Alias these things out to keep lones short
     set pktlen $endpointData($sock,pktlen)
     set func $endpointData($sock,func)
-    
+
     set curlen [string length $endpointData($sock,body)]
-    
+
     # calcalate the remaining length
     set remlen [expr ($pktlen - 2) - $curlen]
     #sanity check, no currently handled packet can be less than the header
     # By now have enough info to start defining remainder of the packet
-    
+
     if {$remlen < 0} {
         puts "curlen :$curlen, pktlen:$pktlen"
         dropSocket $sock
@@ -351,12 +352,12 @@ proc tcpEventRead {sock} {
         return
     }
     set endpointData($sock,body) $endpointData($sock,body)$data
-    
+
     set datalen [string length $endpointData($sock,head)$endpointData($sock,body)]
 
     if { $datalen == $endpointData($sock,maxlen)} {
          ${log}::info "$functext($func),Recv :[binaryPrint $endpointData($sock,head)$endpointData($sock,body)]"
-         
+
 		# need this for funcjump
         set body $endpointData($sock,body)
         # need the eval as args are mixed with call
@@ -369,22 +370,27 @@ proc tcpEventRead {sock} {
 			]
             # marshal up the data
             set txbuffer $head[lindex $valuelist 1]
-            puts -nonewline $sock $txbuffer
-            flush $sock
-            
-            ${log}::info  "Sent :[binaryPrint $txbuffer]"            
-
+	    if { [catch {
+		puts -nonewline $sock $txbuffer
+		flush $sock
+	    }]} {
+		${log}::warn "something bad happened, socket reset or closed"
+		dropSocket $sock
+		return -1
+	    } else {
+		${log}::info  "Sent :[binaryPrint $txbuffer]"
+	    }
         }
         clearEndpointData $sock
-        
+
         ##################################################################
         # this in a special for an application where holding reg 0 is used
         # as a heartbeat to determine health
         updateHeartbeat
-        
+
         return 1
     } elseif { $datalen > [expr ($pktlen) + 6]} {
-        puts "length error $datalen:$curlen:[expr ($pktlen) + 6]"        
+        puts "length error $datalen:$curlen:[expr ($pktlen) + 6]"
         dropSocket $sock
         return -1
     }
@@ -405,7 +411,7 @@ proc serialEventRTU {channel} {
         puts "Warning will robinson"
         clearSerialEndpointData $channel
     } elseif { $ret == 0 } {
-        
+
     } elseif { $ret == 1 } {
         clearSerialEndpointData $channel
     } else {
@@ -447,7 +453,7 @@ proc tcpRTUEventRead {sock} {
     if {[info exists endpointData($sock,timer)]} {
         catch {after cancel $endpointData($sock,timer)}
     }
-    set endpointData($sock,timer) [after 15000 [list dropSocket $sock]]
+    set endpointData($sock,timer) [after 30000 [list dropSocket $sock]]
     set ret [RTUEventRead $sock]
     if { $ret == -1 } {
         dropSocket $sock
@@ -481,20 +487,20 @@ proc RTUEventRead {sock} {
         # puts -nonewline "Read :"
         # binaryPrint $endpointData($sock,head)
         set curlen [string length $endpointData($sock,head)]
-        
+
 		# cheack we have all the head
 		if {$curlen < 2} {
 			return 0
 		}
-		
+
 		# By now have enough info to start defining remainder of the packet
 		binary scan $endpointData($sock,head) cc \
 			endpointData($sock,addr) \
 			endpointData($sock,func)
-			
+
 		# sanity check
 		if {![info exists rtulen($endpointData($sock,func))]} {
-			${log}::error "Invalid func:$func [binaryPrint $endpointData($sock,head)]"        
+			${log}::error "Invalid func:$func [binaryPrint $endpointData($sock,head)]"
 			read $sock
 			return -1
 		}
@@ -504,7 +510,7 @@ proc RTUEventRead {sock} {
     #########################################################################
     set addr $endpointData($sock,addr)
     set func $endpointData($sock,func)
-    
+
     # calcalate the remaining length
     set curlen [string length $endpointData($sock,body)]
     # body length is defined in the RTULEN array
@@ -537,7 +543,7 @@ proc RTUEventRead {sock} {
 		}
     }
 
-	# data is read in bytes so use bc as it represents the 
+	# data is read in bytes so use bc as it represents the
 	# total tail bytes to be read
 	set remlen [expr ($endpointData($sock,maxlen) -2) - $curlen]
     #sanity check, no currently handled packet can be less than the header
@@ -555,14 +561,14 @@ proc RTUEventRead {sock} {
     } else {
 		# Archive data
 		set endpointData($sock,body) $endpointData($sock,body)$data
-		
+
 		# See if we need to go back for more
 		if { [string length $endpointData($sock,body)] < $remlen } {
 			${log}::debug "not enough [string length $endpointData($sock,body)]:$remlen"
 			return 0
 		}
 	}
-	
+
     set datalen [string length $endpointData($sock,head)$endpointData($sock,body)]
     if { $datalen == $endpointData($sock,maxlen)} {
         # debug
@@ -570,7 +576,7 @@ proc RTUEventRead {sock} {
         set body $endpointData($sock,body)
         if { [llength [set valuelist [eval $funcjump($func)] ]] != 0 } {
             set data [binary format c $addr]
-            
+
             set mycrc [crc::crc16 -format %04X -seed 0xFFFF $data[lindex $valuelist 1]]
 
             # I could do the following in 1 line but I want to make
@@ -582,8 +588,13 @@ proc RTUEventRead {sock} {
 
             # marshal up all the data and send
             set txbuffer $data[lindex $valuelist 1][binary format H* $mycrc]
-            puts -nonewline $sock $txbuffer
-            flush $sock
+	    if { [catch {
+		puts -nonewline $sock $txbuffer
+		flush $sock
+	    }]} {
+		${log}::warn "something bad happened, socket reset or closed"
+		return -1
+	    }
 
             # debug out
             ${log}::info "Sent :[binaryPrint $txbuffer]"
@@ -594,10 +605,10 @@ proc RTUEventRead {sock} {
         # this in a special for an application where holding reg 0 is used
         # as a heartbeat to determine health
         updateHeartbeat
-        
+
         ##################################################################
         return 1
-        
+
     } elseif { $datalen > [expr $endpointData($sock,maxlen) + 2]} {
         puts "length error $datalen:$curlen"
         return -1
@@ -702,19 +713,21 @@ proc startSerial {device} {
 	if {$::tcl_platform(os) == {Linux} } {
 		if { ![file exists $device] } {
 			after 10000 [list startSerial $device]
+			return
 		}
 		set fh [open $device {RDWR NONBLOCK}]
 		exec stty -F $device clocal
 	} else {
 		set fh [open $device RDWR]
 	}
-	
+
 	fconfigure $fh -mode 38400,n,8,1
 	fconfigure $fh -blocking 0 -translation binary -buffering none -eofchar {}
 	fileevent $fh readable [list serialEventRTU $fh]
 	clearSerialEndpointData $fh
 	puts "Serial port connected $fh"
 }
+
 startSerial $device
 
 proc updateHeartbeat {} {
@@ -726,7 +739,7 @@ proc updateHeartbeat {} {
 	if { $holdingreg(0) > 0xFFFF } {
 		set holdingreg(0) 0
 	}
-}	
+}
 
 proc showStats {} {
 	variable log
