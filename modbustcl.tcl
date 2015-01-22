@@ -1,4 +1,4 @@
-#!/bin/env tclsh
+#!/usr/bin/env tclsh
 
 puts "modbustcl version 0.7 working 2 DEC 2014"
 
@@ -14,7 +14,7 @@ puts "Known logger levels [logger::levels]"
 puts "Known logger services [logger::services]"
 # log levels
 # debug info notice warn error critical alert emergency
-${::log}::setlevel warn
+${::log}::setlevel info
 
 # Need to rewrite the GP (generating polynomial) to match modbus spec
 # Lucky for us the internal lookup table is generated as needed
@@ -97,7 +97,6 @@ set rtulen(22) 8
 
 proc binaryPrint {data} {
     binary scan $data H* var
-    # puts $var
     return $var
 }
 
@@ -140,6 +139,11 @@ proc input {func data} {
 
 proc holding3 {func data} {
     global holdingreg
+
+	##################################################################
+	# this in a special for an application where holding reg 0 is used
+	# as a heartbeat to determine health
+	updateHeartbeat
 
     binary scan $data SS start len
     set end [expr $start + $len]
@@ -308,6 +312,8 @@ proc tcpEventRead {sock} {
 			return 0
 		}
 
+        ${log}::info "Read:[binaryPrint $endpointData($sock,head)]"
+
 		# 0001,0000,0006,00,06,0001,000a
 		# By now have enough info to start defining remainder of the packet
 		binary scan $endpointData($sock,head) S2Scc \
@@ -318,7 +324,7 @@ proc tcpEventRead {sock} {
 
 		# sanity check
 		if {![info exists rtulen($endpointData($sock,func))]} {
-			${log}::error "Invalid func:$func [binaryPrint $endpointData($sock,head)]"
+			${log}::error "Invalid func:$endpointData($sock,func) [binaryPrint $endpointData($sock,head)]"
 			read $sock
 			clearEndpointData $sock
 		}
@@ -386,7 +392,7 @@ proc tcpEventRead {sock} {
         ##################################################################
         # this in a special for an application where holding reg 0 is used
         # as a heartbeat to determine health
-        updateHeartbeat
+        # updateHeartbeat
 
         return 1
     } elseif { $datalen > [expr ($pktlen) + 6]} {
@@ -402,7 +408,7 @@ proc serialEventRTU {channel} {
 
     if {[fblocked $channel]} {
 		puts "Blocked $channel"
-        return
+		return
     }
 
     #puts "Serial data on channel $channel"
@@ -485,7 +491,7 @@ proc RTUEventRead {sock} {
         # Append data to struct
         set endpointData($sock,head) $endpointData($sock,head)$head
         # puts -nonewline "Read :"
-        # binaryPrint $endpointData($sock,head)
+        binaryPrint $endpointData($sock,head)
         set curlen [string length $endpointData($sock,head)]
 
 		# cheack we have all the head
@@ -500,7 +506,7 @@ proc RTUEventRead {sock} {
 
 		# sanity check
 		if {![info exists rtulen($endpointData($sock,func))]} {
-			${log}::error "Invalid func:$func [binaryPrint $endpointData($sock,head)]"
+			${log}::error "Invalid func:$endpointData($sock,func) [binaryPrint $endpointData($sock,head)]"
 			read $sock
 			return -1
 		}
@@ -604,7 +610,7 @@ proc RTUEventRead {sock} {
         ##################################################################
         # this in a special for an application where holding reg 0 is used
         # as a heartbeat to determine health
-        updateHeartbeat
+        # updateHeartbeat
 
         ##################################################################
         return 1
@@ -646,11 +652,11 @@ proc modtcpConnect {channel clientaddr clientport} {
     global endpointData
     set str "[clock format [clock seconds] -format {%H:%M:%S}] - Connecting from $clientaddr $clientport, $channel"
     puts $str
+    clearEndpointData $channel
     # exec logger -p "local3.info" -t modbustcl $str
     fconfigure $channel -translation binary
     fconfigure $channel -blocking 0
     fileevent $channel readable [list tcpEventRead $channel]
-    clearEndpointData $channel
 }
 
 proc showHelp {} {
@@ -697,9 +703,9 @@ set filename /var/log/testfifo
 set host localhost
 
 puts "Starting server socket"
-socket -server rtuConnect $port
+# socket -server rtuConnect $port
 puts "Starting server socket"
-socket -server modtcpConnect 502
+socket -server modtcpConnect 5020
 
 puts "Starting serial port"
 if {$tcl_platform(os) == {Linux} } {
@@ -728,7 +734,7 @@ proc startSerial {device} {
 	puts "Serial port connected $fh"
 }
 
-startSerial $device
+# startSerial $device
 
 proc updateHeartbeat {} {
 	global holdingreg
